@@ -25,9 +25,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local site directory is not part of this repository
-/site/
-
 # Local archives
 *.zip
 *.tar.gz

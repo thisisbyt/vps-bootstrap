@@ -60,7 +60,7 @@ The archive has one top-level directory:
 vps-bootstrap-v0.1.2/
 ```
 
-It must not contain `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `site/`, `tools/`, caches, local config, state, logs, or secrets.
+It must not contain `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `tools/`, caches, local config, state, logs, or secrets.
 
 Runtime artifact v0.1.2 does not support symlinks. A symlink as a manifest entry or anywhere under an allowlisted directory is a packaging error, even if it points back inside the repository.
 

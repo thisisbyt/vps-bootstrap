@@ -25,7 +25,7 @@
 - [ ] Runtime artifact builds from `packaging/runtime-manifest.txt`
 - [ ] Artifact has one top-level `vps-bootstrap-v0.1.2/` directory
 - [ ] Artifact contains only runtime allowlist
-- [ ] Artifact excludes `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `site/`, `tools/`
+- [ ] Artifact excludes `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `tools/`
 - [ ] `SHA256SUMS` matches the runtime archive
 - [ ] tag/version mismatch fails release build
 - [ ] Runtime artifact rejects symlinks in manifest entries and allowlisted directories
