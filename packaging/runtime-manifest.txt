@@ -1,0 +1,8 @@
+# Files and directories allowed in the production runtime artifact.
+# New repository files are excluded until explicitly added here.
+bootstrap.sh
+requirements.txt
+versions.yml
+app/
+ansible/
+templates/

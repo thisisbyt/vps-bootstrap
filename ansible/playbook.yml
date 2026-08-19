@@ -1,0 +1,9 @@
+---
+- name: VPS Bootstrap v0.1.2 foundation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: v0.1.2 placeholder
+      ansible.builtin.debug:
+        msg: "Ansible foundation is present; no OS changes are applied by Ansible in v0.1.2."

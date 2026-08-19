@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional tag to validate against project version, for example v0.1.2"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Compile and import checks
+        run: |
+          python3 -m compileall app tests tools
+          python3 -c "import app.cli; import tools.build_release"
+
+      - name: Shell syntax check
+        run: bash -n bootstrap.sh
+
+      - name: Packaging tests
+        run: python3 -m unittest tests.test_packaging -v
+
+      - name: Build runtime artifact
+        shell: bash
+        run: |
+          TAG_ARG=()
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG_ARG=(--tag "${GITHUB_REF_NAME}")
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            TAG_ARG=(--tag "${{ inputs.release_tag }}")
+          fi
+          python3 tools/build_release.py "${TAG_ARG[@]}"
+
+      - name: Verify checksum
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes "VPS Bootstrap ${GITHUB_REF_NAME}"
+          mapfile -t EXISTING_ASSETS < <(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')
+          FOUND_EXISTING=0
+
+          upload_immutable_asset() {
+            local path="$1"
+            local name
+            name="$(basename "$path")"
+            for existing in "${EXISTING_ASSETS[@]}"; do
+              if [ "$existing" = "$name" ]; then
+                echo "::error::Release asset already exists and will not be replaced: $name"
+                FOUND_EXISTING=1
+                return 0
+              fi
+            done
+            gh release upload "${GITHUB_REF_NAME}" "$path"
+          }
+
+          upload_immutable_asset "dist/vps-bootstrap-${GITHUB_REF_NAME}.tar.gz"
+          upload_immutable_asset "dist/SHA256SUMS"
+
+          if [ "$FOUND_EXISTING" -ne 0 ]; then
+            exit 1
+          fi

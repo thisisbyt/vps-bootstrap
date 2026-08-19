@@ -1,0 +1,2 @@
+# v0.1.2 intentionally uses only Python standard library at runtime.
+# Keep this file present so bootstrap can install pinned dependencies once added.

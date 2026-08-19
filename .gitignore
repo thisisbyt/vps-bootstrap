@@ -1,0 +1,34 @@
+.env
+.env.*
+secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.sqlite
+*.db
+backups/
+runtime/
+state/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.log
+/dist/
+/build/
+*.egg-info/
+
+# Local/development files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local site directory is not part of this repository
+/site/
+
+# Local archives
+*.zip
+*.tar.gz
+SHA256SUMS
