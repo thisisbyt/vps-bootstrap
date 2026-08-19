@@ -48,15 +48,15 @@ v0.1 не устанавливает и не настраивает:
 
 ## Production install на Ubuntu 24.04
 
-Пока публичный release URL не определён, не используем команду вида `curl ... | bash`.
+Canonical production installation использует versioned GitHub Release artifact и `SHA256SUMS`. Не используйте команду вида `curl ... | bash`.
 
-Production VPS не должен получать development repository целиком. На VPS передаётся только runtime artifact и `SHA256SUMS`.
+Production VPS не должен получать development repository целиком. На VPS скачиваются только runtime artifact и `SHA256SUMS`, затем checksum проверяется до распаковки.
 
-После появления GitHub Release canonical flow:
+Команды ниже предназначены для использования без GitHub authentication после перевода repository в Public. Пока repository остаётся Private, потребуется отдельный способ authenticated download; v0.1.2 не хранит GitHub token на VPS.
 
 ```bash
 VERSION="0.1.2"
-REPO="<owner>/<repo>"
+REPO="thisisbyt/vps-bootstrap"
 
 curl -fL -o "vps-bootstrap-v${VERSION}.tar.gz" \
   "https://github.com/${REPO}/releases/download/v${VERSION}/vps-bootstrap-v${VERSION}.tar.gz"
@@ -68,10 +68,6 @@ tar -xzf "vps-bootstrap-v${VERSION}.tar.gz"
 cd "vps-bootstrap-v${VERSION}"
 sudo bash bootstrap.sh full
 ```
-
-Для public repository этот flow не требует GitHub credentials. Для private repository нужна отдельная authentication strategy; v0.1.2 не хранит GitHub token на VPS.
-
-До публикации GitHub Release используйте development integration flow: собрать artifact локально, передать на VPS только `dist/vps-bootstrap-v0.1.2.tar.gz` и `dist/SHA256SUMS`, затем выполнить такую же checksum verification.
 
 ### Где выполнить
 
@@ -168,7 +164,7 @@ vps-bootstrap-v0.1.2/ansible/
 vps-bootstrap-v0.1.2/templates/
 ```
 
-`AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `site/`, `tools/`, cache files and local secrets are absent.
+`AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `tools/`, cache files and local secrets are absent.
 
 ## Runtime paths
 

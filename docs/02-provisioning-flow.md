@@ -28,7 +28,7 @@ extract
 sudo bash bootstrap.sh
 ```
 
-Artifact собирается из development repository по allowlist и не содержит `AGENTS.md`, `docs/`, `tests/`, `.git/`, `.github/`, `site/` или `tools/`.
+Artifact собирается из development repository по allowlist и не содержит `AGENTS.md`, `docs/`, `tests/`, `.git/`, `.github/` или `tools/`.
 
 В v0.1.2 `Full v0.1.2 setup` выполняет:
 
