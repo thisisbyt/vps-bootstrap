@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Compile and import checks
+        run: |
+          python3 -m compileall app tests tools
+          python3 -c "import app.cli; import tools.build_release"
+
+      - name: Shell syntax check
+        run: bash -n bootstrap.sh
+
+      - name: Packaging tests
+        run: python3 -m unittest tests.test_packaging -v
+
+      - name: Build runtime artifact
+        run: python3 tools/build_release.py
+
+      - name: Verify checksum
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS

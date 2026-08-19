@@ -107,6 +107,23 @@ sha256sum -c SHA256SUMS
 tar -tzf vps-bootstrap-v0.1.2.tar.gz
 ```
 
+## Git workflow
+
+Development changes should use the following flow:
+
+```text
+feature/fix/chore branch
+    -> Pull Request
+    -> CI
+    -> main
+    -> version tag
+    -> GitHub Release
+```
+
+CI runs the non-publishing release checks on pull requests to `main` and pushes to `main`: unit tests, compile/import checks, `bootstrap.sh` syntax check, packaging tests, runtime artifact build, and `SHA256SUMS` verification.
+
+Do not introduce permanent `test` or `prod` branches for this project. Production distribution is the immutable versioned GitHub Release artifact, not a branch checkout.
+
 ## Tag consistency
 
 Release tag `v0.1.2` must match `project.version: "0.1.2"` in `versions.yml`.
