@@ -33,6 +33,33 @@
 - [ ] Archive modes are deterministic: directories `0755`, `bootstrap.sh` `0755`, other files `0644`
 - [ ] GitHub Release upload does not use `--clobber`
 
+## v0.1.3 local checks
+
+- [ ] `versions.yml` project version is `0.1.3`
+- [ ] State supports non-secret phase metadata
+- [ ] Resume verifies `done` swap and SSH phases before skip
+- [ ] Swap discovery handles `/proc/swaps`, `swapon --show`, `/etc/fstab`, filesystem and `/swapfile`
+- [ ] Existing active swap is preserved and no duplicate swap is created
+- [ ] Managed swap verifies active area, size, fstab persistence and `0600`
+- [ ] Managed swap detects duplicate fstab entries
+- [ ] Managed swap rolls back `/etc/fstab` and new swapfile after activation failure
+- [ ] Unsupported filesystem blocks managed swapfile creation
+- [ ] SSH discovery distinguishes configured, effective, systemd and actual listener state
+- [ ] SSH detects `ssh.socket` vs classic `ssh.service`
+- [ ] SSH blocks custom/ambiguous systemd overrides
+- [ ] SSH verifier fails if `sshd -T` shows new port but `ss` still shows old port
+- [ ] SSH port randomization avoids occupied ports
+- [ ] SSH two-port transition preserves old port until second session is confirmed
+- [ ] SSH rollback restores old listener after failed new listener
+- [ ] `sudo vps-bootstrap ssh` reopens SSH configuration after `done` or `skipped`
+- [ ] Repeated SSH migration uses fresh discovery of the current port
+- [ ] Port-only second-session validation uses `ssh -p NEW_PORT USER@SERVER_IP`
+- [ ] SSH yes/no prompts accept strict `y`/`yes` including NFKC full-width forms
+- [ ] Active UFW without new allow rule blocks unsafe finalization
+- [ ] Password auth disable is blocked without publickey-only second-session confirmation
+- [ ] `PermitRootLogin no` is blocked without verified sudo-capable non-root user
+- [ ] Interrupted SSH migration resume does not blindly disable old port
+
 ## v0.1.2 Ubuntu VPS checks
 
 - [ ] Runtime artifact and `SHA256SUMS` are transferred without full repository checkout
@@ -55,6 +82,20 @@
 - [ ] UFW rules unchanged
 - [ ] Fail2ban configuration unchanged
 - [ ] No Xray/3x-ui/PostgreSQL/Caddy/NaiveProxy/WARP/Telegram components installed
+
+## v0.1.3 Ubuntu VPS checks
+
+- [ ] Existing provider/user swap is discovered and preserved
+- [ ] No-swap VPS can create recommended `/swapfile`
+- [ ] `/etc/fstab` backup is created before managed swap persistence change
+- [ ] Re-running `sudo vps-bootstrap resume` skips verified swap
+- [ ] Swap drift is detected if `/swapfile` is inactive or permissions drift
+- [ ] SSH discovery reports `ssh.socket` or `ssh.service` accurately
+- [ ] SSH port migration first exposes old and new ports simultaneously
+- [ ] User can open a second SSH session before old port removal
+- [ ] If user answers `N`, old SSH port remains/restores
+- [ ] External provider firewall/security group requirement is shown to user
+- [ ] UFW active without new port allow does not remove old SSH port
 
 ## Bootstrap
 

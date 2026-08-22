@@ -1,3 +1,3 @@
-"""VPS Bootstrap v0.1.2."""
+"""VPS Bootstrap v0.1.3."""
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"

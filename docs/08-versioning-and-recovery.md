@@ -57,6 +57,56 @@ Production VPS должен скачать конкретный versioned artifa
 
 Release assets для production tag immutable. Workflow не должен использовать `--clobber`; заменить artifact можно только новой project version и новым tag.
 
+## v0.1.3 managed phase state
+
+`swap` и `ssh_hardening` хранят только несекретное expected state, нужное для idempotency, verifier и repair.
+
+Допустимые примеры:
+
+```json
+{
+  "mode": "managed",
+  "path": "/swapfile",
+  "size_bytes": 2147483648
+}
+```
+
+```json
+{
+  "mode": "managed",
+  "ports": [25000],
+  "activation_mode": "socket",
+  "auth_values": {
+    "PubkeyAuthentication": "yes",
+    "PasswordAuthentication": "no"
+  }
+}
+```
+
+State не должен содержать private keys, passwords, SSH key material, tokens или auth headers.
+
+Interrupted SSH migration является safety-sensitive состоянием. Resume не должен использовать stale transitional state, чтобы автоматически отключить старый SSH port.
+
+v0.1.3 records SSH migration state before the first managed SSH write/restart:
+
+```json
+{
+  "mode": "migration",
+  "interrupted_migration": true,
+  "old_ports": [22],
+  "transition_ports": [22, 25000],
+  "new_port": 25000,
+  "activation_mode": "socket",
+  "migration_stage": "planned"
+}
+```
+
+Allowed migration stages are `planned`, `transition_applying`,
+`transition_active`, `awaiting_second_session`, `finalizing` and `done`.
+If resume sees `interrupted_migration=true`, default behavior is safety-first:
+preserve the old port and require manual validation or rollback before any
+finalization that could remove the old SSH listener.
+
 ## State machine
 
 Каждая фаза имеет status:

@@ -16,10 +16,10 @@ def write(path: Path, content: str = "x\n") -> None:
 
 
 def make_repo(root: Path) -> None:
-    write(root / "versions.yml", 'project:\n  version: "0.1.2"\n')
+    write(root / "versions.yml", 'project:\n  version: "0.1.3"\n')
     write(root / "bootstrap.sh", "#!/usr/bin/env bash\n")
     write(root / "requirements.txt", "# pinned deps go here\n")
-    write(root / "app" / "__init__.py", "__version__ = '0.1.2'\n")
+    write(root / "app" / "__init__.py", "__version__ = '0.1.3'\n")
     write(root / "app" / "cli.py", "def main():\n    return 0\n")
     write(root / "ansible" / "playbook.yml", "---\n")
     write(root / "ansible" / "roles" / ".gitkeep", "")
@@ -89,22 +89,22 @@ class PackagingTests(unittest.TestCase):
             repo = Path(directory)
             make_repo(repo)
 
-            result = build_release(repo, dist_dir=repo / "dist", tag="v0.1.2")
+            result = build_release(repo, dist_dir=repo / "dist", tag="v0.1.3")
 
             with tarfile.open(result.archive_path, "r:gz") as archive:
                 names = archive.getnames()
 
-        self.assertIn("vps-bootstrap-v0.1.2/bootstrap.sh", names)
-        self.assertIn("vps-bootstrap-v0.1.2/requirements.txt", names)
-        self.assertIn("vps-bootstrap-v0.1.2/versions.yml", names)
-        self.assertIn("vps-bootstrap-v0.1.2/app/cli.py", names)
-        self.assertIn("vps-bootstrap-v0.1.2/ansible/playbook.yml", names)
-        self.assertIn("vps-bootstrap-v0.1.2/templates/journald-vps-bootstrap.conf", names)
-        self.assertEqual({name.split("/", 1)[0] for name in names}, {"vps-bootstrap-v0.1.2"})
+        self.assertIn("vps-bootstrap-v0.1.3/bootstrap.sh", names)
+        self.assertIn("vps-bootstrap-v0.1.3/requirements.txt", names)
+        self.assertIn("vps-bootstrap-v0.1.3/versions.yml", names)
+        self.assertIn("vps-bootstrap-v0.1.3/app/cli.py", names)
+        self.assertIn("vps-bootstrap-v0.1.3/ansible/playbook.yml", names)
+        self.assertIn("vps-bootstrap-v0.1.3/templates/journald-vps-bootstrap.conf", names)
+        self.assertEqual({name.split("/", 1)[0] for name in names}, {"vps-bootstrap-v0.1.3"})
 
         forbidden = ["AGENTS.md", "README.md", "docs/", "tests/", ".git/", ".github/", "site/", "tools/", "__pycache__", ".pyc", ".gitkeep"]
         for name in names:
-            self.assertTrue(name == "vps-bootstrap-v0.1.2" or name.startswith("vps-bootstrap-v0.1.2/"))
+            self.assertTrue(name == "vps-bootstrap-v0.1.3" or name.startswith("vps-bootstrap-v0.1.3/"))
             self.assertFalse(any(part in name for part in forbidden), name)
         self.assertFalse(any("unknown-development-note.md" in name for name in names))
 
@@ -118,7 +118,7 @@ class PackagingTests(unittest.TestCase):
             checksums = result.checksum_path.read_text(encoding="utf-8")
 
         self.assertEqual(result.checksum, digest)
-        self.assertEqual(checksums, f"{digest}  vps-bootstrap-v0.1.2.tar.gz\n")
+        self.assertEqual(checksums, f"{digest}  vps-bootstrap-v0.1.3.tar.gz\n")
 
     def test_artifact_version_comes_from_versions_yml(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -127,8 +127,8 @@ class PackagingTests(unittest.TestCase):
 
             result = build_release(repo, dist_dir=repo / "dist")
 
-        self.assertEqual(result.version, "0.1.2")
-        self.assertEqual(result.archive_path.name, "vps-bootstrap-v0.1.2.tar.gz")
+        self.assertEqual(result.version, "0.1.3")
+        self.assertEqual(result.archive_path.name, "vps-bootstrap-v0.1.3.tar.gz")
 
     def test_missing_mandatory_runtime_file_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -145,7 +145,7 @@ class PackagingTests(unittest.TestCase):
             make_repo(repo)
 
             with self.assertRaisesRegex(PackagingError, "Tag/version mismatch"):
-                build_release(repo, dist_dir=repo / "dist", tag="v0.1.3")
+                build_release(repo, dist_dir=repo / "dist", tag="v0.1.4")
 
     def test_manifest_rejects_development_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -236,7 +236,7 @@ class PackagingTests(unittest.TestCase):
             repo = Path(directory)
             make_repo(repo)
             dist = repo / "dist"
-            archive = dist / "vps-bootstrap-v0.1.2.tar.gz"
+            archive = dist / "vps-bootstrap-v0.1.3.tar.gz"
             checksum = dist / "SHA256SUMS"
 
             with patch("tools.build_release.atomic_replace", side_effect=fail_once_on_checksum_replace()):
@@ -281,7 +281,7 @@ class PackagingTests(unittest.TestCase):
 
             self.assertNotEqual(new_archive, old_archive)
             self.assertNotEqual(second.checksum_path.read_bytes(), old_checksum)
-            self.assertEqual(new_checksum, f"{hashlib.sha256(new_archive).hexdigest()}  vps-bootstrap-v0.1.2.tar.gz\n")
+            self.assertEqual(new_checksum, f"{hashlib.sha256(new_archive).hexdigest()}  vps-bootstrap-v0.1.3.tar.gz\n")
             assert_no_temp_outputs(self, dist)
 
     def test_backup_failure_keeps_existing_outputs_unchanged(self) -> None:
@@ -315,7 +315,7 @@ class PackagingTests(unittest.TestCase):
         for member in members:
             if member.isdir():
                 self.assertEqual(member.mode, 0o755, member.name)
-            elif member.name == "vps-bootstrap-v0.1.2/bootstrap.sh":
+            elif member.name == "vps-bootstrap-v0.1.3/bootstrap.sh":
                 self.assertEqual(member.mode, 0o755, member.name)
             else:
                 self.assertEqual(member.mode, 0o644, member.name)

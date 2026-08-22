@@ -10,7 +10,7 @@ from typing import Any
 from app.config import DEFAULT_PHASES
 from app.filesystem import ensure_directory, write_atomic
 
-STATE_VERSION = "0.1.2"
+STATE_VERSION = "0.1.3"
 
 
 class PhaseStatus(str, Enum):
@@ -27,14 +27,18 @@ class PhaseState:
     status: PhaseStatus = PhaseStatus.PENDING
     updated_at: str = ""
     message: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, str]:
-        return {
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "name": self.name,
             "status": self.status.value,
             "updated_at": self.updated_at,
             "message": self.message,
         }
+        if self.data:
+            payload["data"] = self.data
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PhaseState":
@@ -43,6 +47,7 @@ class PhaseState:
             status=PhaseStatus(str(data.get("status", PhaseStatus.PENDING.value))),
             updated_at=str(data.get("updated_at", "")),
             message=str(data.get("message", "")),
+            data=dict(data.get("data", {})),
         )
 
 
@@ -50,11 +55,12 @@ class PhaseState:
 class InstallState:
     version: str = STATE_VERSION
     phases: dict[str, PhaseState] = field(default_factory=dict)
+    phase_order: list[str] = field(default_factory=list)
 
     @classmethod
     def fresh(cls, phases: list[str] | None = None) -> "InstallState":
         phase_names = phases or DEFAULT_PHASES
-        return cls(phases={name: PhaseState(name=name) for name in phase_names})
+        return cls(phases={name: PhaseState(name=name) for name in phase_names}, phase_order=list(phase_names))
 
     @classmethod
     def load(cls, path: Path, phases: list[str] | None = None) -> "InstallState":
@@ -64,7 +70,14 @@ class InstallState:
         state = cls(version=STATE_VERSION)
         state.phases = {item["name"]: PhaseState.from_dict(item) for item in data.get("phases", [])}
         migrate_phases(state.phases)
-        for name in phases or DEFAULT_PHASES:
+        saved_order = [str(name) for name in data.get("phase_order", [])]
+        if saved_order:
+            state.phase_order = saved_order
+        elif phases is None:
+            state.phase_order = list(state.phases.keys())
+        else:
+            state.phase_order = list(phases)
+        for name in state.phase_order:
             state.phases.setdefault(name, PhaseState(name=name))
         return state
 
@@ -73,6 +86,7 @@ class InstallState:
         payload = {
             "version": self.version,
             "updated_at": now(),
+            "phase_order": self.phase_order or list(self.phases.keys()),
             "phases": [phase.to_dict() for phase in self.phases.values()],
         }
         write_atomic(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", 0o640)
@@ -82,6 +96,11 @@ class InstallState:
         self.phases[name].status = status
         self.phases[name].updated_at = now()
         self.phases[name].message = message
+
+    def update_phase_data(self, name: str, data: dict[str, Any]) -> None:
+        self.phases.setdefault(name, PhaseState(name=name))
+        self.phases[name].data = dict(data)
+        self.phases[name].updated_at = now()
 
     def first_incomplete(self, order: list[str] | None = None) -> str | None:
         for name in order or list(self.phases.keys()):

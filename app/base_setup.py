@@ -42,11 +42,17 @@ def default_config_payload() -> dict:
         "target_ubuntu": compat.primary_ubuntu,
         "managed_by": "vps-bootstrap",
         "v0_1_policy": {
-            "change_ssh": False,
+            "change_ssh": True,
             "change_firewall": False,
             "change_fail2ban": False,
             "change_hostname": False,
-            "change_swap": False,
+            "change_swap": True,
+        },
+        "v0_1_3_policy": {
+            "managed_swap_phase": True,
+            "managed_ssh_hardening_phase": True,
+            "full_ufw_management": False,
+            "fail2ban_management": False,
         },
     }
 

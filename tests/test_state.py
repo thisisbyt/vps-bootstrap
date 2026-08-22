@@ -29,6 +29,60 @@ class StateTests(unittest.TestCase):
 
         self.assertEqual(state.first_incomplete(["one"]), "one")
 
+    def test_phase_data_roundtrip(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            state = InstallState.fresh(["swap"])
+            state.update_phase_data("swap", {"mode": "managed", "path": "/swapfile", "size_bytes": 2147483648})
+            state.set_phase("swap", PhaseStatus.DONE, "verified")
+            state.save(path)
+
+            loaded = InstallState.load(path, ["swap"])
+
+        self.assertEqual(loaded.phases["swap"].data["mode"], "managed")
+        self.assertEqual(loaded.phases["swap"].data["path"], "/swapfile")
+
+    def test_phase_order_roundtrip_preserves_base_scope(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            state = InstallState.fresh(["preflight", "time_sync"])
+            state.save(path)
+
+            loaded = InstallState.load(path, ["preflight", "time_sync", "swap", "ssh_hardening"])
+
+        self.assertEqual(loaded.phase_order, ["preflight", "time_sync"])
+        self.assertNotIn("swap", loaded.phases)
+        self.assertNotIn("ssh_hardening", loaded.phases)
+
+    def test_legacy_state_without_phase_order_uses_existing_phases_only(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": "0.1.2",
+                        "phases": [
+                            {"name": "preflight", "status": "done"},
+                            {"name": "time_sync", "status": "done"},
+                            {"name": "journald_structure", "status": "done"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = InstallState.load(path)
+
+        self.assertEqual(loaded.phase_order, ["preflight", "time_sync", "journald_structure"])
+        self.assertNotIn("swap", loaded.phases)
+        self.assertNotIn("ssh_hardening", loaded.phases)
+
     def test_state_migrates_time_sync_check_to_time_sync(self) -> None:
         import tempfile
 

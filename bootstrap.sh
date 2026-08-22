@@ -154,14 +154,18 @@ log "active release switched: $CURRENT_LINK -> $RELEASE_DIR"
 STAGE="command-wrapper"
 cat > "$BIN_PATH" <<EOF
 #!/usr/bin/env bash
-export VPS_BOOTSTRAP_PROJECT_ROOT="$CURRENT_LINK"
-export PYTHONPATH="$CURRENT_LINK\${PYTHONPATH:+:\$PYTHONPATH}"
-exec "$CURRENT_LINK/venv/bin/python" -m app.cli "\$@"
+set -Eeuo pipefail
+PROJECT_ROOT="$CURRENT_LINK"
+export VPS_BOOTSTRAP_PROJECT_ROOT="\$PROJECT_ROOT"
+unset PYTHONPATH
+cd "\$PROJECT_ROOT"
+exec "\$PROJECT_ROOT/venv/bin/python" -m app.cli "\$@"
 EOF
 chmod 0755 "$BIN_PATH"
 log "command installed: $BIN_PATH"
 
 STAGE="cli"
 export VPS_BOOTSTRAP_PROJECT_ROOT="$CURRENT_LINK"
-export PYTHONPATH="$CURRENT_LINK${PYTHONPATH:+:$PYTHONPATH}"
+unset PYTHONPATH
+cd "$CURRENT_LINK"
 exec "$CURRENT_LINK/venv/bin/python" -m app.cli "$@"

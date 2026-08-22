@@ -2,7 +2,9 @@
 
 Проект для воспроизводимой подготовки VPS под будущую установку Xray/3x-ui, NaiveProxy, monitoring и сопутствующих сервисов.
 
-Текущая версия: **v0.1.2**.
+Текущая development-версия: **v0.1.3**.
+
+Последний опубликованный immutable release: **v0.1.2**.
 
 Primary target: **Ubuntu 24.04 LTS**.
 
@@ -23,6 +25,9 @@ Primary target: **Ubuntu 24.04 LTS**.
 - поддерживает `sudo vps-bootstrap resume`;
 - перепроверяет `done` фазы перед skip;
 - обеспечивает фактическую time synchronization в base/full setup, используя chrony как managed fallback, если systemd-timesyncd активен, но не синхронизирует часы;
+- в v0.1.3 добавляет управляемую фазу `swap`;
+- в v0.1.3 добавляет безопасную фазу `ssh_hardening` с двухпортовой миграцией при смене SSH port;
+- в v0.1.3 добавляет явную команду `sudo vps-bootstrap ssh` для повторной SSH-настройки без ручного редактирования state;
 - готовит Ansible foundation без применения OS changes через Ansible;
 - собирается в production runtime artifact по explicit allowlist.
 
@@ -37,14 +42,12 @@ v0.1 не устанавливает и не настраивает:
 - Caddy;
 - WARP;
 - Telegram monitoring;
-- SSH hardening;
 - UFW rules;
 - Fail2ban configuration;
 - hostname;
-- swap;
 - sysctl networking.
 
-Единственный новый managed component в v0.1.2 — `chrony`, и только как fallback для time synchronization.
+v0.1.3 не реализует полноценную UFW phase: SSH hardening только учитывает active UFW и не отключает старый SSH-доступ без подтверждения второго подключения.
 
 ## Production install на Ubuntu 24.04
 
@@ -52,7 +55,7 @@ Canonical production installation использует versioned GitHub Release 
 
 Production VPS не должен получать development repository целиком. На VPS скачиваются только runtime artifact и `SHA256SUMS`, затем checksum проверяется до распаковки.
 
-Команды ниже предназначены для использования без GitHub authentication после перевода repository в Public. Пока repository остаётся Private, потребуется отдельный способ authenticated download; v0.1.2 не хранит GitHub token на VPS.
+Команды ниже используют публичный GitHub Release artifact и не требуют GitHub authentication. v0.1.2 не хранит GitHub token на VPS.
 
 ```bash
 VERSION="0.1.2"
@@ -94,6 +97,7 @@ sudo vps-bootstrap
 sudo vps-bootstrap preflight
 sudo vps-bootstrap full
 sudo vps-bootstrap resume
+sudo vps-bootstrap ssh
 sudo vps-bootstrap state
 ```
 
@@ -133,7 +137,7 @@ python3 -m unittest discover -s tests
 python3 -m compileall app tests tools
 bash -n bootstrap.sh
 python3 tools/build_release.py
-tar -tzf dist/vps-bootstrap-v0.1.2.tar.gz
+tar -tzf dist/vps-bootstrap-v0.1.3.tar.gz
 ```
 
 ### Проверка
@@ -141,7 +145,7 @@ tar -tzf dist/vps-bootstrap-v0.1.2.tar.gz
 ```bash
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf vps-bootstrap-v0.1.2.tar.gz | sed -n '1,80p'
+tar -tzf vps-bootstrap-v0.1.3.tar.gz | sed -n '1,80p'
 ```
 
 ### Ожидаемый результат
@@ -149,19 +153,19 @@ tar -tzf vps-bootstrap-v0.1.2.tar.gz | sed -n '1,80p'
 `dist/` содержит:
 
 ```text
-vps-bootstrap-v0.1.2.tar.gz
+vps-bootstrap-v0.1.3.tar.gz
 SHA256SUMS
 ```
 
 Archive содержит только runtime allowlist:
 
 ```text
-vps-bootstrap-v0.1.2/bootstrap.sh
-vps-bootstrap-v0.1.2/requirements.txt
-vps-bootstrap-v0.1.2/versions.yml
-vps-bootstrap-v0.1.2/app/
-vps-bootstrap-v0.1.2/ansible/
-vps-bootstrap-v0.1.2/templates/
+vps-bootstrap-v0.1.3/bootstrap.sh
+vps-bootstrap-v0.1.3/requirements.txt
+vps-bootstrap-v0.1.3/versions.yml
+vps-bootstrap-v0.1.3/app/
+vps-bootstrap-v0.1.3/ansible/
+vps-bootstrap-v0.1.3/templates/
 ```
 
 `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `tools/`, cache files and local secrets are absent.

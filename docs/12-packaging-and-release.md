@@ -50,19 +50,19 @@ New repository files are excluded by default until added to the manifest.
 The artifact name is:
 
 ```text
-dist/vps-bootstrap-v0.1.2.tar.gz
+dist/vps-bootstrap-v0.1.3.tar.gz
 dist/SHA256SUMS
 ```
 
 The archive has one top-level directory:
 
 ```text
-vps-bootstrap-v0.1.2/
+vps-bootstrap-v0.1.3/
 ```
 
 It must not contain `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `tools/`, caches, local config, state, logs, or secrets.
 
-Runtime artifact v0.1.2 does not support symlinks. A symlink as a manifest entry or anywhere under an allowlisted directory is a packaging error, even if it points back inside the repository.
+Runtime artifact v0.1.3 does not support symlinks. A symlink as a manifest entry or anywhere under an allowlisted directory is a packaging error, even if it points back inside the repository.
 
 File modes in the archive are deterministic:
 
@@ -104,7 +104,7 @@ bash -n bootstrap.sh
 python3 tools/build_release.py
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf vps-bootstrap-v0.1.2.tar.gz
+tar -tzf vps-bootstrap-v0.1.3.tar.gz
 ```
 
 ## Git workflow
@@ -126,9 +126,9 @@ Do not introduce permanent `test` or `prod` branches for this project. Productio
 
 ## Tag consistency
 
-Release tag `v0.1.2` must match `project.version: "0.1.2"` in `versions.yml`.
+Release tag `v0.1.3` must match `project.version: "0.1.3"` in `versions.yml`.
 
-If the tag is `v0.1.3` while project version is `0.1.2`, release build must fail.
+If the tag is `v0.1.4` while project version is `0.1.3`, release build must fail.
 
 ## Immutable release assets
 
@@ -148,6 +148,6 @@ If a new build fails, previously valid final artifact files must remain byte-for
 
 `SHA256SUMS` detects corruption or artifact mismatch. If the release source and checksum are compromised together, checksum verification alone is not publisher authentication.
 
-Release signing is a future hardening item and is not implemented in v0.1.2.
+Release signing is a future hardening item and is not implemented in v0.1.3.
 
-For a public repository, downloading a published release artifact does not require GitHub credentials. For a private repository, authentication strategy must be designed separately; v0.1.2 does not store GitHub tokens on the VPS.
+For a public repository, downloading a published release artifact does not require GitHub credentials. For a private repository, authentication strategy must be designed separately; VPS Bootstrap does not store GitHub tokens on the VPS.
