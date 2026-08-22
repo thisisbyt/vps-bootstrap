@@ -215,10 +215,25 @@ class SwapTests(unittest.TestCase):
             self.assertEqual([call.args[0][0] for call in command.call_args_list], ["mkswap", "swapon"])
 
     def test_managed_size_drift_blocks_destructive_repair(self) -> None:
-        disc = discovery(active=[SwapArea("/swapfile", "file", 1 * GIB)], swapfile=SwapFileInfo(True, 1 * GIB, 0o600, "file"))
+        with tempfile.TemporaryDirectory() as directory:
+            fstab = Path(directory) / "fstab"
+            fstab.write_text(
+                "# Managed by vps-bootstrap: swap\n"
+                "/swapfile none swap sw 0 0\n",
+                encoding="utf-8",
+            )
+            disc = discovery(
+                active=[SwapArea("/swapfile", "file", 1 * GIB)],
+                fstab_entries=[MANAGED_FSTAB_LINE],
+                swapfile=SwapFileInfo(True, 1 * GIB, 0o600, "file"),
+            )
 
-        with self.assertRaisesRegex(SwapError, "size drift"):
-            repair_managed_swap({"mode": "managed", "path": "/swapfile", "size_bytes": 2 * GIB}, disc)
+            with patch("app.swap.FSTAB", fstab):
+                with self.assertRaisesRegex(SwapError, "size drift"):
+                    repair_managed_swap(
+                        {"mode": "managed", "path": "/swapfile", "size_bytes": 2 * GIB},
+                        disc,
+                    )
 
     def test_unmanaged_duplicate_swapfile_fstab_entry_blocks_repair(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
