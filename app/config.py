@@ -36,7 +36,7 @@ def compatibility():
     return load_compatibility(project_root())
 
 
-DEFAULT_PHASES = [
+BASE_PHASES = [
     "preflight",
     "runtime_directories",
     "logging",
@@ -45,6 +45,20 @@ DEFAULT_PHASES = [
     "journald_structure",
     "ansible_foundation",
 ]
+
+FULL_PHASES = [
+    "preflight",
+    "runtime_directories",
+    "logging",
+    "config",
+    "time_sync",
+    "swap",
+    "ssh_hardening",
+    "journald_structure",
+    "ansible_foundation",
+]
+
+DEFAULT_PHASES = FULL_PHASES
 
 SUPPORTED_UBUNTU = DEFAULT_COMPATIBILITY.supported_ubuntu
 SUPPORTED_ARCHES = {"x86_64", "amd64", "aarch64", "arm64"}

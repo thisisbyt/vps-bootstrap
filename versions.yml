@@ -1,5 +1,5 @@
 project:
-  version: "0.1.2"
+  version: "0.1.3"
   last_reviewed: "2026-08-18"
 
 os:
@@ -25,30 +25,30 @@ time_sync:
 
 ansible:
   status: "foundation-only"
-  install_policy: "not-installed-in-v0.1.2"
+  install_policy: "not-installed-in-v0.1.3"
   notes: "Future provisioning modules may add a pinned ansible-core dependency after VPS validation."
 
 xray:
-  status: "not-installed-in-v0.1.2"
+  status: "not-installed-in-v0.1.3"
   install_policy: "future-pinned"
 
 three_x_ui:
-  status: "not-installed-in-v0.1.2"
+  status: "not-installed-in-v0.1.3"
   install_policy: "future-pinned"
   notes: "PostgreSQL preferred for new installs only after target version compatibility is verified."
 
 postgresql:
-  status: "not-installed-in-v0.1.2"
+  status: "not-installed-in-v0.1.3"
   install_policy: "future-pinned"
 
 caddy_naiveproxy:
-  status: "not-installed-in-v0.1.2"
+  status: "not-installed-in-v0.1.3"
   install_policy: "future-pinned"
 
 warp:
-  status: "not-installed-in-v0.1.2"
+  status: "not-installed-in-v0.1.3"
   install_policy: "future-pinned"
 
 telegram_monitoring:
-  status: "not-installed-in-v0.1.2"
+  status: "not-installed-in-v0.1.3"
   install_policy: "future-pinned"

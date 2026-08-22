@@ -1,8 +1,8 @@
 # Provisioning flow
 
-## v0.1.2 implementation status
+## v0.1.3 implementation status
 
-Первая рабочая версия ограничена безопасной базовой цепочкой:
+v0.1.3 расширяет безопасную базовую цепочку управляемыми phases `swap` и `ssh_hardening`:
 
 ```text
 bootstrap.sh
@@ -14,6 +14,10 @@ preflight
 runtime directories / logging / config / state
     ↓
 resume verification
+    ↓
+swap
+    ↓
+ssh_hardening
 ```
 
 До `bootstrap.sh` в production flow находится отдельный шаг доставки:
@@ -30,7 +34,7 @@ sudo bash bootstrap.sh
 
 Artifact собирается из development repository по allowlist и не содержит `AGENTS.md`, `docs/`, `tests/`, `.git/`, `.github/` или `tools/`.
 
-В v0.1.2 `Full v0.1.2 setup` выполняет:
+В v0.1.3 `Full v0.1.3 setup` выполняет:
 
 - preflight;
 - создание `/etc/vps-bootstrap/config`;
@@ -39,12 +43,14 @@ Artifact собирается из development repository по allowlist и не
 - создание `/var/log/vps-bootstrap`;
 - создание non-secret config;
 - managed time synchronization: фактическая синхронизация обязательна для успешной verification;
+- managed swap: сохраняет существующий валидный swap или создаёт `/swapfile` только после discovery/validation;
+- managed SSH hardening: учитывает Ubuntu 24.04 `ssh.socket`, проверяет configured/effective/actual state и использует безопасную двухпортовую миграцию;
 - подготовку journald example в config area без применения;
 - проверку наличия Ansible foundation.
 
-В v0.1.2 не изменяются SSH, firewall, Fail2ban, hostname, swap, sysctl networking, TLS и владельцы портов 80/443.
+В v0.1.3 не реализуются полноценные UFW/Fail2ban phases, hostname, sysctl networking, TLS и владельцы портов 80/443.
 
-Единственный новый managed component в v0.1.2 — `chrony`, и только как fallback для time synchronization.
+UFW в v0.1.3 только обнаруживается внутри SSH phase. Если UFW active и новый SSH port не разрешён, отключение старого SSH port блокируется или требует отдельного безопасного allow.
 
 Hardening v0.1.1 дополнительно фиксирует:
 
@@ -215,6 +221,62 @@ Base/full setup должен обеспечить фактическую син�
 8. при удалённой настройке по возможности попросить пользователя открыть вторую SSH-сессию для проверки.
 
 Никогда не закрывать текущий SSH-доступ до проверки нового.
+
+### v0.1.3 SSH hardening
+
+SSH phase различает:
+
+- configured state: файлы `sshd_config` и drop-ins;
+- effective state: вывод `sshd -T`;
+- systemd listener state: `ssh.service` или `ssh.socket`;
+- actual TCP LISTEN: stable `ss -H -lntp` output parsed as listener address, port and owner process.
+
+На Ubuntu 24.04 может использоваться `ssh.socket`. В этом режиме изменение `Port` в `sshd_config.d` само по себе не доказывает смену listener. Нужно выполнить `sshd -t`, `systemctl daemon-reload`, корректно применить `ssh.socket`, затем проверить `systemctl show/cat ssh.socket` и фактический `ss`.
+
+При смене порта используется двухпортовая миграция:
+
+```text
+old_port + new_port
+    -> verify new SSH/systemd listener
+    -> user opens second SSH session on the new port
+    -> only after explicit confirmation final port is applied
+    -> auth hardening uses publickey-only validation only when explicitly requested
+```
+
+For port-only migration, the second session uses the current authentication policy:
+
+```text
+ssh -p NEW_PORT USER@SERVER_IP
+```
+
+Transition config keeps the current authentication policy. `PasswordAuthentication no`,
+`KbdInteractiveAuthentication no` and stricter `PermitRootLogin` are written only
+after the user explicitly requests auth hardening and confirms a second login made with:
+
+```text
+ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no -p NEW_PORT USER@SERVER_IP
+```
+
+`sudo vps-bootstrap ssh` reopens the SSH wizard explicitly even after `ssh_hardening`
+was previously `done` or `skipped`. It always performs fresh discovery and keeps the
+same two-port migration and rollback rules. `full` and `resume` remain conservative:
+they verify/skip completed SSH state and do not reopen a skipped SSH wizard.
+
+Before the first managed SSH write/restart, state is flushed to disk with
+`interrupted_migration=true` and a migration stage such as `planned`,
+`transition_applying`, `transition_active`, `awaiting_second_session` or
+`finalizing`. Resume must preserve the old port by default and must not silently
+complete finalization after a crash.
+
+Пользователь должен увидеть предупреждение:
+
+```text
+НЕ ЗАКРЫВАЙТЕ ТЕКУЩУЮ SSH-СЕССИЮ
+```
+
+Локальный listener не доказывает доступность через внешний provider firewall/security group. Если такой firewall есть, пользователь должен разрешить новый TCP port в панели провайдера до подтверждения.
+
+Если обнаружены custom systemd overrides или effective config не совпадает с ожидаемым managed drop-in, автоматическая миграция блокируется и требуется ручной разбор.
 
 ## Фаза 6. Firewall
 
