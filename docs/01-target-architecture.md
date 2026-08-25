@@ -115,18 +115,10 @@ curl
 git
 python3
 python3-venv
-python3-pip
-jq
-unzip
-tar
-gzip
-openssl
-gnupg
-lsb-release
 iproute2
-dnsutils
-procps
-util-linux
+openssh-client
+passwd
+sudo
 ```
 
 По необходимости:
@@ -134,13 +126,14 @@ util-linux
 ```text
 rsync
 socat
-net-tools
 lsof
 sqlite3        # только если действительно используется SQLite
 postgresql-*   # только при выбранном PostgreSQL-модуле
 ```
 
 Перед добавлением пакета в baseline нужно понимать, зачем он нужен.
+
+`sudo` supplies both `sudo` and `visudo`; `openssh-client` supplies `ssh-keygen`; and `passwd` supplies the account tools used by the admin/root phases. `net-tools` and `nmap` are not baseline dependencies: `ip`/`ss` come from `iproute2`, while an Internet-facing `nmap` check is more meaningful from a separate validation host.
 
 ## Python environment
 

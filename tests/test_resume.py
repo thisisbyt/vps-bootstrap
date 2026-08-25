@@ -310,6 +310,7 @@ class ResumeTests(unittest.TestCase):
             tmp_path = Path(directory)
             paths = make_paths(tmp_path)
             state = InstallState.fresh(DEFAULT_PHASES)
+            state.update_phase_data("admin_user", {"mode": "managed", "sudo_mode": "nopasswd"})
             state.set_phase("ssh_hardening", PhaseStatus.SKIPPED, "user skipped")
             state.update_phase_data("ssh_hardening", {"mode": "skipped", "reason": "user skipped"})
             state.save(paths.state_file)
@@ -325,6 +326,7 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(output, ["DONE ssh_hardening"])
         ensure.assert_called_once()
         self.assertTrue(ensure.call_args.kwargs["force_reconfigure"])
+        self.assertEqual(ensure.call_args.kwargs["sudo_mode"], "nopasswd")
         self.assertEqual(loaded.phases["ssh_hardening"].status, PhaseStatus.DONE)
 
     def test_explicit_ssh_reconfigure_runs_after_done_phase(self) -> None:
@@ -381,3 +383,347 @@ class ResumeTests(unittest.TestCase):
                     resume.run_ssh_reconfigure(paths)
 
         discover.assert_not_called()
+
+    def test_full_migration_synchronizes_components_and_second_full_skips_all(self) -> None:
+        phases = ["firewall", "fail2ban", "ssh_hardening"]
+        firewall_old = {"mode": "managed", "ssh_ports": [22], "default_incoming": "deny", "default_outgoing": "allow"}
+        firewall_new = {"mode": "managed", "ssh_ports": [25000], "default_incoming": "deny", "default_outgoing": "allow"}
+        fail2ban_old = {"mode": "managed", "ports": [22], "maxretry": 5, "findtime": "10m", "bantime": "1h", "ignoreip": []}
+        fail2ban_new = {**fail2ban_old, "ports": [25000]}
+        ssh_new = {
+            "mode": "managed",
+            "ports": [25000],
+            "old_ports": [22],
+            "activation_mode": "service",
+            "auth_values": {"PubkeyAuthentication": "yes"},
+            "component_states": {"firewall": firewall_new, "fail2ban": fail2ban_new},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            paths = make_paths(tmp_path)
+            state = InstallState.fresh(phases)
+            state.update_phase_data("firewall", firewall_old)
+            state.update_phase_data("fail2ban", fail2ban_old)
+            state.set_phase("firewall", PhaseStatus.DONE)
+            state.set_phase("fail2ban", PhaseStatus.DONE)
+            state.save(paths.state_file)
+
+            with patch.object(resume, "DEFAULT_PHASES", phases), patch.object(
+                resume, "verify_firewall_state", side_effect=lambda data: data.get("ssh_ports") in ([22], [25000])
+            ), patch.object(resume, "verify_fail2ban_state", side_effect=lambda data: data.get("ports") in ([22], [25000])), patch.object(
+                resume, "ensure_firewall_from_state"
+            ) as firewall_wizard, patch.object(resume, "ensure_fail2ban_from_state") as fail2ban_wizard, patch.object(
+                resume, "ensure_ssh_hardening_from_state", return_value=ssh_new
+            ) as ssh_wizard, patch.object(resume, "verify_expected_ssh_state", return_value=True):
+                first = resume.run_setup(paths, tmp_path, phases=phases, scope="full")
+
+            loaded = InstallState.load(paths.state_file)
+            self.assertEqual(loaded.phases["firewall"].data, firewall_new)
+            self.assertEqual(loaded.phases["fail2ban"].data, fail2ban_new)
+            self.assertEqual(loaded.phases["ssh_hardening"].data["ports"], [25000])
+            firewall_wizard.assert_not_called()
+            fail2ban_wizard.assert_not_called()
+            ssh_wizard.assert_called_once()
+            self.assertIn("DONE ssh_hardening", first)
+
+            with patch.object(resume, "DEFAULT_PHASES", phases), patch.object(
+                resume, "verify_firewall_state", side_effect=lambda data: data == firewall_new
+            ), patch.object(resume, "verify_fail2ban_state", side_effect=lambda data: data == fail2ban_new), patch.object(
+                resume, "verify_expected_ssh_state", return_value=True
+            ), patch.object(resume, "ensure_firewall_from_state") as firewall_wizard, patch.object(
+                resume, "ensure_fail2ban_from_state"
+            ) as fail2ban_wizard, patch.object(resume, "ensure_ssh_hardening_from_state") as ssh_wizard:
+                second = resume.run_setup(paths, tmp_path, phases=phases, scope="full")
+
+        self.assertEqual(second, [
+            "SKIP firewall [already configured]",
+            "SKIP fail2ban [already configured]",
+            "SKIP ssh_hardening [already configured]",
+        ])
+        firewall_wizard.assert_not_called()
+        fail2ban_wizard.assert_not_called()
+        ssh_wizard.assert_not_called()
+
+    def test_explicit_repeated_ssh_reconfigure_persists_component_ports(self) -> None:
+        def ssh_state(old_port: int, new_port: int) -> dict:
+            return {
+                "mode": "managed",
+                "ports": [new_port],
+                "old_ports": [old_port],
+                "activation_mode": "service",
+                "auth_values": {"PubkeyAuthentication": "yes"},
+                "component_states": {
+                    "firewall": {"mode": "managed", "ssh_ports": [new_port], "default_incoming": "deny", "default_outgoing": "allow"},
+                    "fail2ban": {"mode": "managed", "ports": [new_port], "maxretry": 5, "findtime": "10m", "bantime": "1h", "ignoreip": []},
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            paths = make_paths(tmp_path)
+            state = InstallState.fresh(DEFAULT_PHASES)
+            state.save(paths.state_file)
+            with patch.object(resume, "ensure_ssh_hardening_from_state", side_effect=[ssh_state(22, 25000), ssh_state(25000, 26000)]), patch.object(
+                resume, "verify_expected_ssh_state", return_value=True
+            ):
+                resume.run_ssh_reconfigure(paths)
+                resume.run_ssh_reconfigure(paths)
+            loaded = InstallState.load(paths.state_file)
+
+        self.assertEqual(loaded.phases["ssh_hardening"].data["ports"], [26000])
+        self.assertEqual(loaded.phases["firewall"].data["ssh_ports"], [26000])
+        self.assertEqual(loaded.phases["fail2ban"].data["ports"], [26000])
+
+    def test_interrupted_resume_recovers_ssh_before_component_verifiers(self) -> None:
+        phases = ["firewall", "fail2ban", "ssh_hardening"]
+        stages = ["firewall_prepared", "transition_active", "fail2ban_prepared", "firewall_finalizing"]
+        for stage in stages:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                tmp_path = Path(directory)
+                paths = make_paths(tmp_path)
+                state = InstallState.fresh(phases)
+                state.set_phase("firewall", PhaseStatus.DONE)
+                state.set_phase("fail2ban", PhaseStatus.DONE)
+                state.set_phase("ssh_hardening", PhaseStatus.FAILED)
+                state.update_phase_data(
+                    "ssh_hardening",
+                    {"mode": "migration", "interrupted_migration": True, "migration_stage": stage},
+                )
+                state.save(paths.state_file)
+                events: list[str] = []
+                recovery = {
+                    "mode": "skipped",
+                    "reason": "rolled back",
+                    "interrupted_migration": False,
+                    "rollback_completed": True,
+                    "component_states": {
+                        "firewall": {"mode": "managed", "ssh_ports": [22]},
+                        "fail2ban": {"mode": "managed", "ports": [22]},
+                    },
+                }
+
+                with patch.object(resume, "ensure_ssh_hardening_from_state", side_effect=lambda *args, **kwargs: events.append("ssh-recovery") or recovery), patch.object(
+                    resume, "verify_firewall_state", side_effect=lambda data: events.append("firewall-verify") or True
+                ), patch.object(resume, "verify_fail2ban_state", side_effect=lambda data: events.append("fail2ban-verify") or True), patch.object(
+                    resume, "verify_expected_ssh_state", return_value=False
+                ):
+                    output = resume.run_setup(paths, tmp_path, scope="resume")
+
+                self.assertEqual(events[0], "ssh-recovery")
+                self.assertLess(events.index("ssh-recovery"), events.index("firewall-verify"))
+                self.assertLess(events.index("ssh-recovery"), events.index("fail2ban-verify"))
+                self.assertIn("SKIP ssh_hardening [rolled back]", output)
+
+    def test_interrupted_done_ssh_state_bypasses_normal_verifier_and_enters_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            paths = make_paths(tmp_path)
+            state = InstallState.fresh(["ssh_hardening"])
+            state.set_phase("ssh_hardening", PhaseStatus.DONE)
+            state.update_phase_data(
+                "ssh_hardening",
+                {"mode": "migration", "interrupted_migration": True, "migration_stage": "transition_active"},
+            )
+            state.save(paths.state_file)
+            recovery = {
+                "mode": "skipped",
+                "reason": "rolled back",
+                "interrupted_migration": False,
+                "rollback_completed": True,
+            }
+            with patch.object(resume, "verify_expected_ssh_state") as normal_verify, patch.object(
+                resume, "ensure_ssh_hardening_from_state", return_value=recovery
+            ) as recover:
+                output = resume.run_setup(paths, tmp_path, scope="resume")
+
+        normal_verify.assert_not_called()
+        recover.assert_called_once()
+        self.assertEqual(output[0], "SKIP ssh_hardening [rolled back]")
+
+    def test_interrupted_finalization_rollback_persists_old_component_states(self) -> None:
+        phases = ["firewall", "fail2ban", "ssh_hardening"]
+        firewall_old = {"mode": "managed", "ssh_ports": [22], "default_incoming": "deny", "default_outgoing": "allow"}
+        fail2ban_old = {"mode": "managed", "ports": [22], "maxretry": 5, "findtime": "10m", "bantime": "1h", "ignoreip": []}
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            paths = make_paths(tmp_path)
+            state = InstallState.fresh(phases)
+            state.set_phase("firewall", PhaseStatus.DONE)
+            state.set_phase("fail2ban", PhaseStatus.DONE)
+            state.set_phase("ssh_hardening", PhaseStatus.FAILED)
+            state.update_phase_data("firewall", {**firewall_old, "ssh_ports": [25000]})
+            state.update_phase_data("fail2ban", {**fail2ban_old, "ports": [25000]})
+            state.update_phase_data(
+                "ssh_hardening",
+                {
+                    "mode": "migration",
+                    "interrupted_migration": True,
+                    "migration_stage": "firewall_finalizing",
+                    "old_ports": [22],
+                    "activation_mode": "service",
+                    "backup_metadata": {"dropin": None},
+                    "component_metadata": {"firewall": {"managed": True}, "fail2ban": {"managed": True}},
+                },
+            )
+            state.save(paths.state_file)
+            rollback_result = {
+                "rollback_completed": True,
+                "cleanup_pending": [],
+                "component_states": {"firewall": firewall_old, "fail2ban": fail2ban_old},
+            }
+            with patch("builtins.input", return_value="2"), patch(
+                "app.ssh_hardening.rollback_ssh_transaction", return_value=rollback_result
+            ) as rollback, patch.object(resume, "verify_firewall_state", side_effect=lambda data: data == firewall_old), patch.object(
+                resume, "verify_fail2ban_state", side_effect=lambda data: data == fail2ban_old
+            ):
+                output = resume.run_setup(paths, tmp_path, scope="resume")
+            loaded = InstallState.load(paths.state_file)
+
+        rollback.assert_called_once()
+        self.assertEqual(loaded.phases["firewall"].data, firewall_old)
+        self.assertEqual(loaded.phases["fail2ban"].data, fail2ban_old)
+        self.assertFalse(loaded.phases["ssh_hardening"].data["interrupted_migration"])
+        self.assertTrue(loaded.phases["ssh_hardening"].data["rollback_completed"])
+        self.assertEqual(output[0], "SKIP ssh_hardening [interrupted SSH migration rolled back; run vps-bootstrap ssh explicitly to retry]")
+
+    def test_normal_full_does_not_auto_repair_managed_ssh_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            paths = make_paths(tmp_path)
+            state = InstallState.fresh(["ssh_hardening"])
+            state.set_phase("ssh_hardening", PhaseStatus.DONE)
+            state.update_phase_data(
+                "ssh_hardening",
+                {"mode": "managed", "ports": [25000], "activation_mode": "service", "auth_values": {"PubkeyAuthentication": "yes"}},
+            )
+            drifted = ssh_discovery(ports={22}, listeners={22}, ssh_listeners={22})
+            with patch.object(resume, "DEFAULT_PHASES", ["ssh_hardening"]), patch.object(
+                resume, "verify_expected_ssh_state", return_value=False
+            ), patch("app.ssh_hardening.discover_ssh", return_value=drifted), patch("app.ssh_hardening.write_atomic") as write, patch(
+                "app.ssh_hardening.apply_systemd_ssh"
+            ) as systemd:
+                with self.assertRaisesRegex(resume.SetupError, "sudo vps-bootstrap ssh"):
+                    resume.run_setup(paths, tmp_path, state=state, phases=["ssh_hardening"], scope="full")
+
+        write.assert_not_called()
+        systemd.assert_not_called()
+
+    def test_greenfield_hardening_order_persists_and_second_run_skips(self) -> None:
+        phases = ["admin_user", "root_hardening", "firewall", "fail2ban", "ssh_hardening", "security_updates"]
+        admin_data = {
+            "mode": "managed",
+            "username": "adminuser",
+            "fingerprint": "SHA256:admin",
+            "validated": True,
+            "sudo_mode": "nopasswd",
+            "sudo_validated": True,
+            "local_password_status": "configured",
+            "local_password_usable": True,
+        }
+        root_data = {
+            "mode": "managed",
+            "admin_username": "adminuser",
+            "admin_validated": True,
+            "root_authorized_keys": {"action": "remove_all", "fingerprints": [], "verified": True},
+            "root_password": {"action": "lock", "status": "L", "locked": True, "verified": True},
+        }
+        component_data = {
+            "firewall": {"mode": "managed", "ssh_ports": [22]},
+            "fail2ban": {"mode": "managed", "ports": [22]},
+            "ssh_hardening": {
+                "mode": "managed",
+                "ports": [25000],
+                "activation_mode": "socket",
+                "auth_values": {
+                    "PubkeyAuthentication": "yes",
+                    "PasswordAuthentication": "no",
+                    "KbdInteractiveAuthentication": "no",
+                    "PermitRootLogin": "no",
+                    "PermitEmptyPasswords": "no",
+                },
+            },
+            "security_updates": {"mode": "managed", "enabled": True, "automatic_reboot": False},
+        }
+        order: list[str] = []
+
+        def ensured(name: str, value: dict):
+            def inner(*args, **kwargs):
+                order.append(name)
+                return value
+
+            return inner
+
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            paths = make_paths(tmp_path)
+            state = InstallState.fresh(phases)
+            with patch.object(resume, "ensure_admin_user_from_state", side_effect=ensured("admin", admin_data)) as admin, patch.object(
+                resume, "ensure_root_hardening_from_state", side_effect=ensured("root", root_data)
+            ) as root, patch.object(
+                resume, "ensure_firewall_from_state", side_effect=ensured("firewall", component_data["firewall"])
+            ) as firewall, patch.object(
+                resume, "ensure_fail2ban_from_state", side_effect=ensured("fail2ban", component_data["fail2ban"])
+            ) as fail2ban, patch.object(
+                resume, "ensure_ssh_hardening_from_state", side_effect=ensured("ssh", component_data["ssh_hardening"])
+            ) as ssh, patch.object(
+                resume, "ensure_security_updates_from_state", side_effect=ensured("security", component_data["security_updates"])
+            ) as security, patch.object(
+                resume, "verify_admin_user_state", side_effect=lambda data: data == admin_data
+            ), patch.object(
+                resume, "verify_root_hardening_state", side_effect=lambda data, admin_state, paths_arg: data == root_data and admin_state == admin_data
+            ), patch.object(
+                resume, "verify_firewall_state", side_effect=lambda data: data == component_data["firewall"]
+            ), patch.object(
+                resume, "verify_fail2ban_state", side_effect=lambda data: data == component_data["fail2ban"]
+            ), patch.object(
+                resume, "verify_expected_ssh_state", side_effect=lambda data: data == component_data["ssh_hardening"]
+            ), patch.object(
+                resume, "verify_security_updates_state", side_effect=lambda data: data == component_data["security_updates"]
+            ):
+                first = resume.run_setup(paths, tmp_path, state=state, phases=phases)
+                second = resume.run_setup(paths, tmp_path, scope="resume")
+                loaded = InstallState.load(paths.state_file)
+
+        self.assertEqual(order, ["admin", "root", "firewall", "fail2ban", "ssh", "security"])
+        self.assertEqual(first, [f"DONE {phase}" for phase in phases])
+        self.assertEqual(second, [f"SKIP {phase} [already configured]" for phase in phases])
+        for phase in phases:
+            self.assertEqual(loaded.phases[phase].status, PhaseStatus.DONE)
+        for mocked in (admin, root, firewall, fail2ban, ssh, security):
+            self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(ssh.call_args.kwargs["sudo_mode"], "nopasswd")
+
+    def test_explicit_root_hardening_failure_preserves_saved_backup_progress(self) -> None:
+        progress = {
+            "mode": "running",
+            "admin_username": "adminuser",
+            "admin_validated": True,
+            "root_authorized_keys": {
+                "action": "remove_all",
+                "fingerprints": [],
+                "backup": "/var/lib/vps-bootstrap/backups/root-hardening/operation/authorized_keys",
+                "verified": True,
+            },
+        }
+
+        def fail_after_backup(data, admin_data, paths, force_reconfigure=False, save_state=None):
+            save_state(progress)
+            raise resume.RootHardeningError("root password verification failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = make_paths(Path(directory))
+            state = InstallState.fresh(["admin_user", "root_hardening"])
+            state.update_phase_data(
+                "admin_user",
+                {"mode": "managed", "username": "adminuser", "validated": True, "sudo_validated": True},
+            )
+            state.set_phase("admin_user", PhaseStatus.DONE)
+            state.save(paths.state_file)
+            with patch.object(resume, "ensure_root_hardening_from_state", side_effect=fail_after_backup):
+                with self.assertRaisesRegex(resume.SetupError, "root password verification failed"):
+                    resume.run_root_hardening_reconfigure(paths)
+
+            loaded = InstallState.load(paths.state_file)
+
+        self.assertEqual(loaded.phases["root_hardening"].status, PhaseStatus.FAILED)
+        self.assertEqual(loaded.phases["root_hardening"].data, progress)

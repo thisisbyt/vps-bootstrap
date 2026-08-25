@@ -53,7 +53,12 @@ FULL_PHASES = [
     "config",
     "time_sync",
     "swap",
+    "admin_user",
+    "root_hardening",
+    "firewall",
+    "fail2ban",
     "ssh_hardening",
+    "security_updates",
     "journald_structure",
     "ansible_foundation",
 ]

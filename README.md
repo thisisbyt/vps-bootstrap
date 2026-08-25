@@ -2,11 +2,13 @@
 
 Проект для воспроизводимой подготовки VPS под будущую установку Xray/3x-ui, NaiveProxy, monitoring и сопутствующих сервисов.
 
-Текущая development-версия: **v0.1.3**.
+Текущая development-версия: **v0.2.0**.
 
 Последний опубликованный immutable release: **v0.1.2**.
 
 Primary target: **Ubuntu 24.04 LTS**.
+
+Development goal for v0.2.0: complete the base OS preparation layer without adding VPN/application services. v0.2.0 adds managed `admin_user`, `root_hardening`, `firewall`, `fail2ban`, and `security_updates` phases and coordinates managed UFW/Fail2ban with SSH port migration.
 
 Главная цель v0.1.x: доказать цепочку `runtime artifact -> bootstrap.sh -> Python CLI -> preflight -> state/resume -> verification` на свежей Ubuntu 24.04 до добавления VPN/proxy-компонентов.
 
@@ -48,6 +50,10 @@ v0.1 не устанавливает и не настраивает:
 - sysctl networking.
 
 v0.1.3 не реализует полноценную UFW phase: SSH hardening только учитывает active UFW и не отключает старый SSH-доступ без подтверждения второго подключения.
+
+v0.2.0 adds managed UFW and Fail2ban phases. It still does not install Xray, 3x-ui, PostgreSQL, NaiveProxy, Caddy, WARP, Docker, Telegram monitoring, VPN service ports, or aggressive sysctl tuning.
+
+The v0.2.0 admin flow supports password-required sudo or an exact-user NOPASSWD rule in `/etc/sudoers.d/10-vps-bootstrap-admin`. NOPASSWD never changes the global `%sudo` rule and is separate from the optional local password used for console recovery. After the non-root public-key and sudo path is verified in a second session, `root_hardening` audits root authorized keys, applies the selected root-password policy, and reports legacy `%admin` access without editing package-owned sudoers files.
 
 ## Production install на Ubuntu 24.04
 
@@ -97,7 +103,12 @@ sudo vps-bootstrap
 sudo vps-bootstrap preflight
 sudo vps-bootstrap full
 sudo vps-bootstrap resume
+sudo vps-bootstrap admin-user
+sudo vps-bootstrap root-hardening
+sudo vps-bootstrap firewall
+sudo vps-bootstrap fail2ban
 sudo vps-bootstrap ssh
+sudo vps-bootstrap security-updates
 sudo vps-bootstrap state
 ```
 
@@ -137,7 +148,7 @@ python3 -m unittest discover -s tests
 python3 -m compileall app tests tools
 bash -n bootstrap.sh
 python3 tools/build_release.py
-tar -tzf dist/vps-bootstrap-v0.1.3.tar.gz
+tar -tzf dist/vps-bootstrap-v0.2.0.tar.gz
 ```
 
 ### Проверка
@@ -145,7 +156,7 @@ tar -tzf dist/vps-bootstrap-v0.1.3.tar.gz
 ```bash
 cd dist
 sha256sum -c SHA256SUMS
-tar -tzf vps-bootstrap-v0.1.3.tar.gz | sed -n '1,80p'
+tar -tzf vps-bootstrap-v0.2.0.tar.gz | sed -n '1,80p'
 ```
 
 ### Ожидаемый результат
@@ -153,19 +164,19 @@ tar -tzf vps-bootstrap-v0.1.3.tar.gz | sed -n '1,80p'
 `dist/` содержит:
 
 ```text
-vps-bootstrap-v0.1.3.tar.gz
+vps-bootstrap-v0.2.0.tar.gz
 SHA256SUMS
 ```
 
 Archive содержит только runtime allowlist:
 
 ```text
-vps-bootstrap-v0.1.3/bootstrap.sh
-vps-bootstrap-v0.1.3/requirements.txt
-vps-bootstrap-v0.1.3/versions.yml
-vps-bootstrap-v0.1.3/app/
-vps-bootstrap-v0.1.3/ansible/
-vps-bootstrap-v0.1.3/templates/
+vps-bootstrap-v0.2.0/bootstrap.sh
+vps-bootstrap-v0.2.0/requirements.txt
+vps-bootstrap-v0.2.0/versions.yml
+vps-bootstrap-v0.2.0/app/
+vps-bootstrap-v0.2.0/ansible/
+vps-bootstrap-v0.2.0/templates/
 ```
 
 `AGENTS.md`, `README.md`, `docs/`, `tests/`, `.git/`, `.github/`, `tools/`, cache files and local secrets are absent.

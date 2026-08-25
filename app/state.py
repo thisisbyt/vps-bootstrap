@@ -10,7 +10,7 @@ from typing import Any
 from app.config import DEFAULT_PHASES
 from app.filesystem import ensure_directory, write_atomic
 
-STATE_VERSION = "0.1.3"
+STATE_VERSION = "0.2.0"
 
 
 class PhaseStatus(str, Enum):
@@ -71,10 +71,15 @@ class InstallState:
         state.phases = {item["name"]: PhaseState.from_dict(item) for item in data.get("phases", [])}
         migrate_phases(state.phases)
         saved_order = [str(name) for name in data.get("phase_order", [])]
+        if "admin_user" in saved_order and "root_hardening" not in saved_order and "root_hardening" in state.phases:
+            saved_order.insert(saved_order.index("admin_user") + 1, "root_hardening")
         if saved_order:
             state.phase_order = saved_order
         elif phases is None:
             state.phase_order = list(state.phases.keys())
+            if "admin_user" in state.phase_order and "root_hardening" in state.phase_order:
+                state.phase_order.remove("root_hardening")
+                state.phase_order.insert(state.phase_order.index("admin_user") + 1, "root_hardening")
         else:
             state.phase_order = list(phases)
         for name in state.phase_order:
@@ -82,14 +87,14 @@ class InstallState:
         return state
 
     def save(self, path: Path) -> None:
-        ensure_directory(path.parent, 0o750)
+        ensure_directory(path.parent, 0o700)
         payload = {
             "version": self.version,
             "updated_at": now(),
             "phase_order": self.phase_order or list(self.phases.keys()),
             "phases": [phase.to_dict() for phase in self.phases.values()],
         }
-        write_atomic(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", 0o640)
+        write_atomic(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", 0o600)
 
     def set_phase(self, name: str, status: PhaseStatus, message: str = "") -> None:
         self.phases.setdefault(name, PhaseState(name=name))
@@ -130,3 +135,5 @@ def migrate_phases(phases: dict[str, PhaseState]) -> None:
             updated_at=old.updated_at,
             message=f"migrated from time_sync_check: {old.message}".strip().rstrip(":"),
         )
+    if "admin_user" in phases and "root_hardening" not in phases:
+        phases["root_hardening"] = PhaseState(name="root_hardening")

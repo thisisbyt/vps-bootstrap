@@ -107,9 +107,12 @@ apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
   git \
+  openssh-client \
+  passwd \
   python3 \
   python3-venv \
-  iproute2
+  iproute2 \
+  sudo
 log "bootstrap dependencies installed"
 
 STAGE="install-layout"
