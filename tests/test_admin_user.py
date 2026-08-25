@@ -60,13 +60,18 @@ class AdminUserTests(unittest.TestCase):
             with patch("app.admin_user.fingerprint_public_key", return_value="SHA256:testfp"), patch(
                 "app.admin_user.pwd.getpwnam",
                 return_value=SimpleNamespace(pw_dir=str(home), pw_uid=1001, pw_gid=1002),
-            ), patch("app.admin_user.run_command", side_effect=fake_run), patch("app.admin_user.setup_password_interactively") as passwd, patch("app.admin_user.confirm", return_value=True):
+            ), patch("app.admin_user.run_command", side_effect=fake_run), patch(
+                "app.admin_user.setup_password_interactively"
+            ) as passwd, patch("app.admin_user.configure_sudo_policy") as sudo_policy, patch(
+                "app.admin_user.confirm", return_value=True
+            ):
                 state = apply_admin_user_plan(AdminUserPlan("adminuser", True, PUBLIC_KEY))
 
             self.assertEqual(state["username"], "adminuser")
             self.assertEqual(state["fingerprint"], "SHA256:testfp")
             self.assertTrue(state["validated"])
             passwd.assert_called_once_with("adminuser")
+            sudo_policy.assert_called_once_with("adminuser", SUDO_MODE_PASSWORD_REQUIRED)
             self.assertIn(["useradd", "--create-home", "--shell", "/bin/bash", "adminuser"], commands)
             self.assertIn(["usermod", "-aG", "sudo", "adminuser"], commands)
             self.assertEqual(state["sudo_mode"], SUDO_MODE_PASSWORD_REQUIRED)
@@ -101,10 +106,12 @@ class AdminUserTests(unittest.TestCase):
             ), patch("app.admin_user.discover_admin_user", return_value=discovery), patch(
                 "app.admin_user.run_command", return_value=CommandResult([], 0, "", "")
             ), patch("app.admin_user.setup_password_interactively") as passwd, patch(
-                "app.admin_user.confirm", return_value=True
+                "app.admin_user.configure_sudo_policy"
+            ) as sudo_policy, patch("app.admin_user.confirm", return_value=True
             ):
                 apply_admin_user_plan(AdminUserPlan("existing", False, PUBLIC_KEY))
         passwd.assert_not_called()
+        sudo_policy.assert_called_once_with("existing", SUDO_MODE_PASSWORD_REQUIRED)
 
     def test_existing_user_nopasswd_does_not_change_or_lock_local_password(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -142,9 +149,13 @@ class AdminUserTests(unittest.TestCase):
                 return_value=SimpleNamespace(pw_dir=str(home), pw_uid=1001, pw_gid=1001, pw_shell="/bin/bash"),
             ), patch("app.admin_user.discover_admin_user", return_value=discovery), patch(
                 "app.admin_user.run_command", return_value=CommandResult([], 0, "", "")
-            ), patch("app.admin_user.confirm", return_value=False):
+            ), patch("app.admin_user.configure_sudo_policy") as sudo_policy, patch(
+                "app.admin_user.confirm", return_value=False
+            ):
                 with self.assertRaisesRegex(AdminUserError, "validation was not confirmed"):
                     apply_admin_user_plan(AdminUserPlan("existing", False, PUBLIC_KEY))
+
+        sudo_policy.assert_called_once_with("existing", SUDO_MODE_PASSWORD_REQUIRED)
 
     def test_existing_locked_user_blocks_password_required_before_sudoers_change(self) -> None:
         discovery = AdminUserDiscovery(

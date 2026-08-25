@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -45,6 +45,55 @@ from app.ssh_hardening import (
     validate_candidate_effective,
     verify_discovered_ssh_state,
 )
+
+
+PROTECTED_SYSTEM_PATHS = (
+    "/etc/sudoers",
+    "/etc/sudoers.d",
+    "/root",
+    "/etc/ssh",
+    "/etc/ufw",
+    "/etc/fail2ban",
+)
+
+
+def is_protected_system_path(path: Path) -> bool:
+    value = path.as_posix()
+    return any(value == root or value.startswith(root + "/") for root in PROTECTED_SYSTEM_PATHS)
+
+
+@contextmanager
+def deny_real_system_path_access():
+    methods = (
+        "exists",
+        "is_file",
+        "is_dir",
+        "stat",
+        "lstat",
+        "open",
+        "read_text",
+        "write_text",
+        "read_bytes",
+        "write_bytes",
+        "mkdir",
+        "unlink",
+        "chmod",
+        "touch",
+        "iterdir",
+        "glob",
+        "rglob",
+    )
+    with ExitStack() as stack:
+        for method_name in methods:
+            original = getattr(Path, method_name)
+
+            def guarded(path, *args, _name=method_name, _original=original, **kwargs):
+                if is_protected_system_path(path):
+                    raise AssertionError(f"unit test attempted {_name} on protected system path: {path}")
+                return _original(path, *args, **kwargs)
+
+            stack.enter_context(patch.object(Path, method_name, guarded))
+        yield
 
 
 def discovery(
@@ -1384,7 +1433,7 @@ class SSHHardeningTests(unittest.TestCase):
         from app.config import Paths
         from app.root_hardening import AdminGroupAudit, ensure_root_hardening_from_state
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, deny_real_system_path_access():
             home = Path(directory) / "adminuser"
             home.mkdir()
             order: list[str] = []
@@ -1402,6 +1451,8 @@ class SSHHardeningTests(unittest.TestCase):
                 "app.admin_user.pwd.getpwnam", return_value=type("Entry", (), {"pw_dir": str(home), "pw_uid": 1001, "pw_gid": 1001})()
             ), patch("app.admin_user.run_command", side_effect=admin_run), patch(
                 "app.admin_user.setup_password_interactively", side_effect=lambda username: order.append("admin-passwd")
+            ), patch(
+                "app.admin_user.configure_sudo_policy", side_effect=lambda username, mode: order.append("admin-sudo-policy")
             ), patch("app.admin_user.confirm", return_value=True):
                 admin_state = apply_admin_user_plan(AdminUserPlan("adminuser", True, "ssh-ed25519 QUJDREVGR0g= example"))
 
@@ -1466,6 +1517,7 @@ class SSHHardeningTests(unittest.TestCase):
             "admin-passwd",
             "admin-sudo-added",
             "admin-key-ownership",
+            "admin-sudo-policy",
             "root-keys-audited",
             "root-password-policy",
             "ufw-old-allowed",
