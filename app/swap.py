@@ -196,7 +196,7 @@ def validate_swap_size(size_bytes: int, free_bytes: int) -> None:
     if size_bytes <= 0:
         raise SwapError("Swap size must be greater than zero.")
     if size_bytes > MAX_MANAGED_SWAP_BYTES:
-        raise SwapError("Requested swap size is too large for v0.1.3 safety limits.")
+        raise SwapError("Requested swap size is too large for v0.2.0 safety limits.")
     if free_bytes - size_bytes < MIN_FREE_AFTER_SWAP_BYTES:
         raise SwapError("Insufficient disk space for swap while keeping a safe free-space reserve.")
 
@@ -206,7 +206,7 @@ def validate_filesystem_for_swap(fs_type: str) -> None:
     if normalized in SUPPORTED_SWAPFILE_FILESYSTEMS:
         return
     if normalized in UNSUPPORTED_SWAPFILE_FILESYSTEMS:
-        raise SwapError(f"Filesystem {fs_type} requires special swapfile handling and is blocked in v0.1.3.")
+        raise SwapError(f"Filesystem {fs_type} requires special swapfile handling and is blocked in v0.2.0.")
     raise SwapError(f"Unsupported or unknown filesystem for managed swapfile: {fs_type}.")
 
 
@@ -349,7 +349,7 @@ def repair_managed_swap(data: dict, discovery: SwapDiscovery) -> None:
     active = next((area for area in discovery.active_areas if area.path == expected_path), None)
     if active:
         if expected_size and abs(active.size_bytes - expected_size) > SIZE_TOLERANCE_BYTES:
-            raise SwapError("Managed swap size drift detected; automatic destructive resize is blocked in v0.1.3.")
+            raise SwapError("Managed swap size drift detected; automatic destructive resize is blocked in v0.2.0.")
         if discovery.swapfile.exists and discovery.swapfile.mode != 0o600:
             os.chmod(DEFAULT_SWAPFILE, 0o600)
         ensure_managed_fstab_entry(fstab_content)
@@ -358,7 +358,7 @@ def repair_managed_swap(data: dict, discovery: SwapDiscovery) -> None:
         if discovery.swapfile.kind != "file":
             raise SwapError(f"{DEFAULT_SWAPFILE} exists but is not a regular file.")
         if expected_size and abs(discovery.swapfile.size_bytes - expected_size) > SIZE_TOLERANCE_BYTES:
-            raise SwapError("Managed swapfile size drift detected; automatic destructive resize is blocked in v0.1.3.")
+            raise SwapError("Managed swapfile size drift detected; automatic destructive resize is blocked in v0.2.0.")
         if not managed_swap_ownership_confirmed(data, discovery, fstab_content):
             raise SwapError(f"{DEFAULT_SWAPFILE} exists but ownership by vps-bootstrap cannot be proven; refusing to run mkswap.")
         os.chmod(DEFAULT_SWAPFILE, 0o600)

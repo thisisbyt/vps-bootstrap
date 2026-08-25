@@ -1,5 +1,50 @@
 # Validation checklist
 
+## v0.2.0 local checks
+
+- [ ] `versions.yml` project version is `0.2.0`
+- [ ] `base` scope remains conservative and excludes `swap`, `admin_user`, `root_hardening`, `firewall`, `fail2ban`, and `ssh_hardening`
+- [ ] `full` scope includes `admin_user`, `root_hardening`, `firewall`, `fail2ban`, `ssh_hardening`, and `security_updates`
+- [ ] `admin_user` rejects `root` and invalid usernames
+- [ ] `admin_user` validates SSH public keys and stores only username/fingerprint/validation state
+- [ ] `admin_user` requires publickey-only second SSH session and sudo validation
+- [ ] publickey-only second-session instructions show generic `-i <path-to-private-key>` and `IdentitiesOnly=yes`, while explaining when ssh-agent/OpenSSH config/default identity makes them optional
+- [ ] password-required sudo uses the system `passwd` tool without Python reading the password
+- [ ] password-required sudo validation runs `sudo -k`, requires the first `sudo -n true` to fail, then requires `sudo -v` and a successful post-authentication `sudo -n true`
+- [ ] NOPASSWD sudo validation runs `sudo -k`, `sudo -n true`, and `sudo -n whoami` without `sudo -v`; the final command reports `root`
+- [ ] NOPASSWD sudo uses only `/etc/sudoers.d/10-vps-bootstrap-admin`, mode `0440`, exact-user policy, and `visudo -cf`
+- [ ] switching back to password-required removes only the managed sudoers drop-in
+- [ ] root authorized-key cleanup creates an immutable root-only backup and stores fingerprints rather than key bodies
+- [ ] root password lock default depends on whether the non-root admin has a verified local recovery password
+- [ ] root shell/account expiry are unchanged and legacy `%admin` access is warning-only
+- [ ] sensitive path modes and ownership match the documented permission matrix
+- [ ] UFW phase never uses `ufw reset`
+- [ ] UFW managed SSH rules use an identifiable vps-bootstrap comment
+- [ ] UFW preserves unrelated rules
+- [ ] Fail2ban recommended preset is rendered for SSH only
+- [ ] Fail2ban customized values are validated
+- [ ] Fail2ban verifies valid configuration, active service, active `sshd` jail, actual SSH port, and no conflicting effective `[sshd] port` override
+- [ ] SSH migration prepares managed UFW before SSH transition
+- [ ] SSH migration updates managed Fail2ban to OLD+NEW during transition
+- [ ] SSH rollback restores and verifies OLD UFW access before restoring SSH, restores managed Fail2ban, and removes temporary NEW UFW access only after the OLD path is proven usable
+- [ ] Successful SSH migration/rollback synchronizes persisted firewall and Fail2ban phase state
+- [ ] Interrupted SSH recovery runs before ordinary firewall/Fail2ban drift handling
+- [ ] Security unattended upgrades are enabled
+- [ ] Automatic reboot remains disabled
+- [ ] Unit tests remain hermetic and do not depend on host `/etc`, systemd, UFW, Fail2ban, or network state
+
+## v0.2.0 Ubuntu VPS checks
+
+- [ ] Fresh install from runtime artifact succeeds on Ubuntu 24.04
+- [ ] `sudo vps-bootstrap admin-user` validates a second publickey-only admin login and sudo
+- [ ] `sudo vps-bootstrap root-hardening` runs only after validated alternate admin access
+- [ ] `sudo vps-bootstrap firewall` enables UFW without breaking SSH
+- [ ] `sudo vps-bootstrap fail2ban` enables SSH jail for the actual SSH port
+- [ ] `sudo vps-bootstrap ssh` migrates OLD_PORT -> NEW_PORT with managed UFW and Fail2ban
+- [ ] Failed second-session confirmation rolls back safely
+- [ ] `sudo vps-bootstrap security-updates` enables security updates, verifies an effective Ubuntu security origin, and leaves auto reboot disabled
+- [ ] Re-running `sudo vps-bootstrap full` verifies and skips completed phases
+
 ## v0.1.2 local checks
 
 - [ ] Python modules compile
@@ -8,7 +53,7 @@
 - [ ] State file roundtrip works
 - [ ] Resume skips verified `done` phases
 - [ ] Resume repairs drifted `done` phases
-- [ ] State save creates `/var/lib/vps-bootstrap` with `0750` and state file with `0640`
+- [ ] State save creates `/var/lib/vps-bootstrap` with `0700` and state file with `0600`
 - [ ] Runtime directory verification checks modes, not only existence
 - [ ] Managed config drift creates timestamped backup and restores default
 - [ ] Unmanaged config drift requires manual intervention
@@ -50,6 +95,8 @@
 - [ ] SSH verifier fails if `sshd -T` shows new port but `ss` still shows old port
 - [ ] SSH port randomization avoids occupied ports
 - [ ] SSH two-port transition preserves old port until second session is confirmed
+- [ ] SSH auth-hardening validation explains how to select the client-side private key without storing or guessing its path
+- [ ] root-disable sudo validation follows the selected password-required or NOPASSWD admin policy
 - [ ] SSH rollback restores old listener after failed new listener
 - [ ] `sudo vps-bootstrap ssh` reopens SSH configuration after `done` or `skipped`
 - [ ] Repeated SSH migration uses fresh discovery of the current port
@@ -58,6 +105,7 @@
 - [ ] Active UFW without new allow rule blocks unsafe finalization
 - [ ] Password auth disable is blocked without publickey-only second-session confirmation
 - [ ] `PermitRootLogin no` is blocked without verified sudo-capable non-root user
+- [ ] managed SSH config and effective `sshd -T` both require `PermitEmptyPasswords no`
 - [ ] Interrupted SSH migration resume does not blindly disable old port
 
 ## v0.1.2 Ubuntu VPS checks

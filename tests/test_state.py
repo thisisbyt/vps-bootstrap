@@ -120,5 +120,43 @@ class StateTests(unittest.TestCase):
             state = InstallState.fresh(["one"])
             state.save(path)
 
-            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o750)
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_state_save_requests_root_ownership_for_directory_and_file(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "app.filesystem.chown_root_if_possible"
+        ) as chown_root:
+            path = Path(directory) / "state" / "state.json"
+            InstallState.fresh(["one"]).save(path)
+
+        chown_root.assert_any_call(path.parent)
+        chown_root.assert_any_call(path)
+
+    def test_v020_state_missing_root_hardening_migrates_pending_after_admin(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": "0.2.0",
+                        "phase_order": ["swap", "admin_user", "firewall"],
+                        "phases": [
+                            {"name": "swap", "status": "done"},
+                            {"name": "admin_user", "status": "done"},
+                            {"name": "firewall", "status": "done"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = InstallState.load(path)
+
+        self.assertEqual(loaded.phase_order, ["swap", "admin_user", "root_hardening", "firewall"])
+        self.assertEqual(loaded.phases["root_hardening"].status, PhaseStatus.PENDING)

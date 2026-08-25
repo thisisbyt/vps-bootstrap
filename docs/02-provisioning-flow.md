@@ -1,5 +1,23 @@
 # Provisioning flow
 
+## v0.2.0 implementation status
+
+v0.2.0 extends the validated v0.1.3 runtime with base OS hardening phases:
+
+```text
+admin_user
+root_hardening
+firewall
+fail2ban
+security_updates
+```
+
+`full` runs `admin_user`, then `root_hardening`, then the managed firewall and service phases. Root credentials are not removed until a non-root publickey login and the selected sudo policy have been validated in a real second session.
+
+`admin_user` supports password-required sudo and a per-user NOPASSWD drop-in. A local recovery password is a separate choice. `root_hardening` audits root authorized keys by fingerprint, backs up exact original lines before cleanup, applies a conditional root-password policy, and only warns about effective legacy `%admin` membership. Current state storage uses a root-only `0700` directory and `0600` state file.
+
+Managed SSH port migration coordinates UFW and Fail2ban only when those components are already managed by vps-bootstrap. Unmanaged or absent UFW/Fail2ban keeps the v0.1.3 SSH path.
+
 ## v0.1.3 implementation status
 
 v0.1.3 расширяет безопасную базовую цепочку управляемыми phases `swap` и `ssh_hardening`:
@@ -254,8 +272,10 @@ Transition config keeps the current authentication policy. `PasswordAuthenticati
 after the user explicitly requests auth hardening and confirms a second login made with:
 
 ```text
-ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no -p NEW_PORT USER@SERVER_IP
+ssh -i <path-to-private-key> -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -p NEW_PORT USER@SERVER_IP
 ```
+
+`<path-to-private-key>` is a client-side placeholder for the private key corresponding to the configured public key. When that key is already selected by `ssh-agent`, OpenSSH config, or a default identity, `-i` and `IdentitiesOnly=yes` may be omitted. vps-bootstrap never discovers or stores the client-side private-key path.
 
 `sudo vps-bootstrap ssh` reopens the SSH wizard explicitly even after `ssh_hardening`
 was previously `done` or `skipped`. It always performs fresh discovery and keeps the

@@ -30,6 +30,14 @@ class InstallLayoutTests(unittest.TestCase):
         self.assertNotIn('exec "$VENV_DIR/bin/python"', bootstrap)
         self.assertNotIn('rm -rf "$INSTALL_DIR/app"', bootstrap)
 
+    def test_bootstrap_installs_required_modern_base_tools(self) -> None:
+        bootstrap = Path("bootstrap.sh").read_text(encoding="utf-8")
+
+        for package in ("ca-certificates", "curl", "git", "openssh-client", "passwd", "python3", "python3-venv", "iproute2", "sudo"):
+            self.assertIn(package, bootstrap)
+        self.assertNotIn("net-tools", bootstrap)
+        self.assertNotIn("nmap", bootstrap)
+
     @unittest.skipIf(os.name == "nt" or not shutil.which("bash"), "bash subprocess wrapper check requires Linux/Unix")
     def test_wrapper_cd_prevents_cwd_app_shadowing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

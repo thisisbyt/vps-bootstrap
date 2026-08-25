@@ -57,6 +57,19 @@ class CLITests(unittest.TestCase):
 
         reconfigure.assert_called_once()
 
+    def test_explicit_component_commands_run_reconfigure(self) -> None:
+        cases = [
+            ("admin-user", "run_admin_user_reconfigure"),
+            ("root-hardening", "run_root_hardening_reconfigure"),
+            ("firewall", "run_firewall_reconfigure"),
+            ("fail2ban", "run_fail2ban_reconfigure"),
+            ("security-updates", "run_security_updates_reconfigure"),
+        ]
+        for command, function_name in cases:
+            with self.subTest(command=command), patch(f"app.cli.{function_name}", return_value=["DONE"]) as reconfigure:
+                self.assertEqual(cli.run_command(command, Paths(), logger=None), 0)
+                reconfigure.assert_called_once()
+
     def test_help_lists_ssh_command(self) -> None:
         buffer = StringIO()
         with redirect_stdout(buffer), self.assertRaises(SystemExit) as exc:
@@ -64,6 +77,11 @@ class CLITests(unittest.TestCase):
 
         self.assertEqual(exc.exception.code, 0)
         self.assertIn("ssh", buffer.getvalue())
+        self.assertIn("admin-user", buffer.getvalue())
+        self.assertIn("root-hardening", buffer.getvalue())
+        self.assertIn("firewall", buffer.getvalue())
+        self.assertIn("fail2ban", buffer.getvalue())
+        self.assertIn("security-updates", buffer.getvalue())
 
     def test_base_error_recommends_resume_and_preserves_exit_code(self) -> None:
         buffer = StringIO()

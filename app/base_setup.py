@@ -20,7 +20,7 @@ def managed_directories(paths: Paths) -> list[ManagedPath]:
         ManagedPath(paths.etc_dir, 0o750),
         ManagedPath(paths.config_dir, 0o750),
         ManagedPath(paths.secrets_dir, 0o700),
-        ManagedPath(paths.state_dir, 0o750),
+        ManagedPath(paths.state_dir, 0o700),
         ManagedPath(paths.log_dir, 0o750),
     ]
 
@@ -41,18 +41,23 @@ def default_config_payload() -> dict:
         "version": compat.project_version,
         "target_ubuntu": compat.primary_ubuntu,
         "managed_by": "vps-bootstrap",
-        "v0_1_policy": {
+        "v0_2_policy": {
             "change_ssh": True,
-            "change_firewall": False,
-            "change_fail2ban": False,
+            "change_firewall": True,
+            "change_fail2ban": True,
             "change_hostname": False,
             "change_swap": True,
         },
         "v0_1_3_policy": {
             "managed_swap_phase": True,
             "managed_ssh_hardening_phase": True,
-            "full_ufw_management": False,
-            "fail2ban_management": False,
+        },
+        "v0_2_0_policy": {
+            "admin_user_phase": True,
+            "root_hardening_phase": True,
+            "managed_ufw_phase": True,
+            "managed_fail2ban_sshd_phase": True,
+            "security_unattended_upgrades": True,
         },
     }
 
@@ -141,5 +146,18 @@ def verify_ansible_foundation(project_root: Path) -> bool:
 
 
 def available_base_tools() -> dict[str, bool]:
-    tools = ["curl", "git", "jq", "openssl", "dig", "ip", "ss"]
+    tools = [
+        "curl",
+        "git",
+        "python3",
+        "ip",
+        "ss",
+        "ssh",
+        "ssh-keygen",
+        "passwd",
+        "useradd",
+        "usermod",
+        "sudo",
+        "visudo",
+    ]
     return {tool: shutil.which(tool) is not None for tool in tools}

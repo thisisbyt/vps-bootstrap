@@ -22,6 +22,21 @@ caddy_naive:
 
 Не использовать этот пример как реальные версии.
 
+## v0.2.0 recovery notes
+
+v0.2.0 adds base OS hardening phases `admin_user`, `root_hardening`, `firewall`, `fail2ban`, and `security_updates`.
+
+Recovery rules:
+
+- `resume` continues the saved phase scope and does not expand legacy v0.1.x state into new safety-sensitive phases;
+- explicit component commands such as `vps-bootstrap admin-user`, `vps-bootstrap root-hardening`, `vps-bootstrap firewall`, `vps-bootstrap fail2ban`, `vps-bootstrap ssh`, and `vps-bootstrap security-updates` may reconfigure their component using fresh discovery;
+- interrupted SSH migration still blocks ordinary scope changes until the recovery prompt is resolved;
+- SSH/UFW/Fail2ban rollback is marked successful only after rollback verification succeeds.
+
+State remains non-secret. Admin user state stores username, public key fingerprint, sudo mode, local-password status, and validation flags, but not key material, password hashes, or passwords. Root hardening state stores actions, fingerprints/counts, verification flags, and trusted backup metadata; it never stores authorized-key bodies.
+
+An older state with `admin_user` but no `root_hardening` phase is migrated with `root_hardening` pending immediately after `admin_user`. Existing legacy scopes without `admin_user` are not expanded into new destructive phases by `resume`.
+
 ## Git tags
 
 Релизы проекта:

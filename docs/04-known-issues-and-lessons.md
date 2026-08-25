@@ -299,3 +299,11 @@ journalctl --disk-usage
 РџСЂРё Р»СЋР±РѕР№ РѕС€РёР±РєРµ СЃРЅР°С‡Р°Р»Р° СЃРѕР±СЂР°С‚СЊ РґРёР°РіРЅРѕСЃС‚РёРєСѓ, РїРѕС‚РѕРј РјРµРЅСЏС‚СЊ РєРѕРЅС„РёРіСѓСЂР°С†РёСЋ.
 
 РЎРєСЂРёРїС‚ РґРѕР»Р¶РµРЅ СЃРѕС…СЂР°РЅСЏС‚СЊ РїРѕР»РµР·РЅС‹Р№ Р»РѕРі Рё РЅРµ РІС‹РїРѕР»РЅСЏС‚СЊ С†РёРєР»РёС‡РµСЃРєРёРµ restart Р±РµР· РїРѕРЅРёРјР°РЅРёСЏ РїСЂРёС‡РёРЅС‹.
+
+## 19. Sudo convenience and recovery credentials are separate policies
+
+Per-user NOPASSWD sudo does not prove that an account has a usable local console password. Conversely, a local password does not prove publickey SSH or sudo access. Each path requires its own discovery and real validation.
+
+Root SSH keys or the root local password must not be removed until a non-root publickey session and the selected sudo mode are proven. Root key cleanup needs an exact immutable backup, while root password locking must keep root's normal shell and must not expire or disable the UID 0 account.
+
+Security-sensitive permissions should be explicit per path. A global shell `umask 0077` is not a substitute for verified owner/mode on home, SSH, sudoers, state, and backup files.

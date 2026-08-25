@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.base_setup import ensure_default_config, ensure_runtime_directories, verify_default_config, verify_runtime_directories
+from app.base_setup import available_base_tools, ensure_default_config, ensure_runtime_directories, verify_default_config, verify_runtime_directories
 from app.config import Paths
 from app.filesystem import write_atomic
 from app.resume import SetupError, run_setup
@@ -74,6 +74,17 @@ class BaseSetupPermissionTests(unittest.TestCase):
 
 
 class BaseSetupAtomicTests(unittest.TestCase):
+    def test_base_tool_audit_matches_bootstrap_and_admin_runtime_requirements(self) -> None:
+        with patch("app.base_setup.shutil.which", return_value="/usr/bin/tool"):
+            tools = available_base_tools()
+
+        self.assertTrue(
+            {"curl", "git", "python3", "ip", "ss", "ssh", "ssh-keygen", "passwd", "useradd", "usermod", "sudo", "visudo"}
+            <= set(tools)
+        )
+        self.assertNotIn("netstat", tools)
+        self.assertNotIn("nmap", tools)
+
     def test_default_config_uses_atomic_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             paths = make_paths(Path(directory))

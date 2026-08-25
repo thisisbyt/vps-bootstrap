@@ -1,5 +1,22 @@
 # Компоненты
 
+## v0.2.0 scope
+
+v0.2.0 completes the base OS hardening layer. It adds:
+
+- `admin_user`: non-root sudo user with SSH public-key-only second-session validation;
+- `root_hardening`: root authorized-key audit, conditional root local-password lock, and warning-only legacy `admin` group audit;
+- `firewall`: managed UFW policy that preserves unrelated rules;
+- `fail2ban`: managed SSH-only Fail2ban jail;
+- `security_updates`: Ubuntu security unattended upgrades with automatic reboot disabled;
+- SSH/UFW/Fail2ban transaction hooks for safe SSH port migration.
+
+See `docs/13-v0.2-base-os-hardening.md` for the detailed design and acceptance checklist.
+
+`admin_user` supports password-required sudo and an exact-user NOPASSWD rule. It never changes the global `%sudo` policy. Existing authorized keys are preserved and deduplicated by key identity, and existing local passwords are changed only after a separate explicit choice.
+
+`root_hardening` runs only after the alternate admin publickey and sudo path is verified. It stores root key fingerprints/counts and backup metadata, never public key bodies. Root password locking uses `passwd -l root`; it does not change root's shell, expire the account, or disable UID 0.
+
 ## v0.1.3 scope
 
 В v0.1.3 реализованы bootstrap, Python CLI, preflight, state/resume, safe logging, base setup foundation, managed time synchronization fallback, managed swap, safe SSH hardening и Ansible skeleton.
@@ -94,6 +111,7 @@ v0.1.3 safety notes:
 - stale old SSH listeners after final migration are drift, while unrelated services on other ports are allowed;
 - candidate files are validated with `sshd -t` and `sshd -T` before socket/service reload or restart;
 - transition keeps current auth settings; final `PasswordAuthentication no`, `KbdInteractiveAuthentication no` and stricter `PermitRootLogin` require a confirmed publickey-only second SSH login;
+- managed auth policy explicitly requires effective `PermitEmptyPasswords no`;
 - interrupted migration state is written before managed SSH writes/restarts and resume never removes the old port automatically.
 - `sudo vps-bootstrap ssh` is an explicit reconfiguration command; it performs fresh discovery and may reopen the SSH wizard even when the phase was previously `done` or `skipped`.
 

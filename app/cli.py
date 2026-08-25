@@ -6,7 +6,16 @@ import traceback
 
 from app.config import BASE_PHASES, DEFAULT_PHASES, Paths, project_root
 from app.preflight import format_report, run_preflight
-from app.resume import SetupError, run_setup, run_ssh_reconfigure
+from app.resume import (
+    SetupError,
+    run_admin_user_reconfigure,
+    run_fail2ban_reconfigure,
+    run_firewall_reconfigure,
+    run_root_hardening_reconfigure,
+    run_security_updates_reconfigure,
+    run_setup,
+    run_ssh_reconfigure,
+)
 from app.safe_logging import setup_logger
 from app.state import InstallState
 from app.system_info import collect_server_info, format_server_info
@@ -14,7 +23,11 @@ from app.system_info import collect_server_info, format_server_info
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vps-bootstrap")
-    parser.add_argument("command", nargs="?", choices=["preflight", "base", "full", "resume", "state", "ssh"])
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["preflight", "base", "full", "resume", "state", "admin-user", "root-hardening", "firewall", "fail2ban", "ssh", "security-updates"],
+    )
     args = parser.parse_args(argv)
     paths = Paths()
     logger = setup_logger(paths.log_file if paths.log_file.exists() else None)
@@ -46,11 +59,16 @@ def menu(paths: Paths, logger) -> int:
                     "",
                     "1. Preflight check",
                     "2. Base system setup",
-                    "3. Full v0.1.3 setup",
+                    "3. Full v0.2.0 setup",
                     "4. Resume interrupted setup",
-                    "5. Configure SSH",
-                    "6. Show current state",
-                    "7. Exit",
+                    "5. Configure admin user",
+                    "6. Configure root hardening",
+                    "7. Configure firewall",
+                    "8. Configure Fail2ban",
+                    "9. Configure SSH",
+                    "10. Configure security updates",
+                    "11. Show current state",
+                    "12. Exit",
                     "",
                 ]
             )
@@ -61,9 +79,14 @@ def menu(paths: Paths, logger) -> int:
             "2": "base",
             "3": "full",
             "4": "resume",
-            "5": "ssh",
-            "6": "state",
-            "7": "exit",
+            "5": "admin-user",
+            "6": "root-hardening",
+            "7": "firewall",
+            "8": "fail2ban",
+            "9": "ssh",
+            "10": "security-updates",
+            "11": "state",
+            "12": "exit",
         }
         command = mapping.get(choice)
         if command == "exit":
@@ -73,7 +96,7 @@ def menu(paths: Paths, logger) -> int:
             if code != 0:
                 return code
         else:
-            print("Unknown option. Choose 1-7.")
+            print("Unknown option. Choose 1-12.")
 
 
 def run_command(command: str, paths: Paths, logger) -> int:
@@ -85,11 +108,26 @@ def run_command(command: str, paths: Paths, logger) -> int:
         phases = BASE_PHASES if command == "base" else DEFAULT_PHASES if command == "full" else None
         lines = run_setup(paths, project_root(), phases=phases, scope=command, logger=logger)
         print("\n".join(lines))
-        print("v0.1.3 setup finished.")
+        print("v0.2.0 setup finished.")
+        return 0
+    if command == "admin-user":
+        print("\n".join(run_admin_user_reconfigure(paths, logger=logger)))
+        return 0
+    if command == "root-hardening":
+        print("\n".join(run_root_hardening_reconfigure(paths, logger=logger)))
+        return 0
+    if command == "firewall":
+        print("\n".join(run_firewall_reconfigure(paths, logger=logger)))
+        return 0
+    if command == "fail2ban":
+        print("\n".join(run_fail2ban_reconfigure(paths, logger=logger)))
         return 0
     if command == "ssh":
         lines = run_ssh_reconfigure(paths, logger=logger)
         print("\n".join(lines))
+        return 0
+    if command == "security-updates":
+        print("\n".join(run_security_updates_reconfigure(paths, logger=logger)))
         return 0
     if command == "state":
         state = InstallState.load(paths.state_file)

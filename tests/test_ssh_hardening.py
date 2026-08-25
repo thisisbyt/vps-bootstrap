@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+from contextlib import ExitStack, contextmanager, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,13 +34,66 @@ from app.ssh_hardening import (
     parse_confirmation,
     format_codepoints,
     publickey_only_second_session_command,
+    publickey_only_second_session_instructions,
+    print_sudo_validation_instruction,
     recover_interrupted_migration,
+    render_sshd_dropin,
     rollback_ssh,
+    rollback_ssh_transaction,
     second_session_command,
     second_session_validation_command,
     validate_candidate_effective,
     verify_discovered_ssh_state,
 )
+
+
+PROTECTED_SYSTEM_PATHS = (
+    "/etc/sudoers",
+    "/etc/sudoers.d",
+    "/root",
+    "/etc/ssh",
+    "/etc/ufw",
+    "/etc/fail2ban",
+)
+
+
+def is_protected_system_path(path: Path) -> bool:
+    value = path.as_posix()
+    return any(value == root or value.startswith(root + "/") for root in PROTECTED_SYSTEM_PATHS)
+
+
+@contextmanager
+def deny_real_system_path_access():
+    methods = (
+        "exists",
+        "is_file",
+        "is_dir",
+        "stat",
+        "lstat",
+        "open",
+        "read_text",
+        "write_text",
+        "read_bytes",
+        "write_bytes",
+        "mkdir",
+        "unlink",
+        "chmod",
+        "touch",
+        "iterdir",
+        "glob",
+        "rglob",
+    )
+    with ExitStack() as stack:
+        for method_name in methods:
+            original = getattr(Path, method_name)
+
+            def guarded(path, *args, _name=method_name, _original=original, **kwargs):
+                if is_protected_system_path(path):
+                    raise AssertionError(f"unit test attempted {_name} on protected system path: {path}")
+                return _original(path, *args, **kwargs)
+
+            stack.enter_context(patch.object(Path, method_name, guarded))
+        yield
 
 
 def discovery(
@@ -67,6 +122,7 @@ def discovery(
         "passwordauthentication": ["no" if reliable_key else "yes"],
         "kbdinteractiveauthentication": ["no" if reliable_key else "yes"],
         "permitrootlogin": ["no" if sudo_user and reliable_key else "prohibit-password"],
+        "permitemptypasswords": ["no"],
     }
     actual_ports = listeners or ports or {22}
     tcp = tcp_listeners or [TCPListener(f"0.0.0.0:{port}", port, 'users:(("sshd",pid=1,fd=3))') for port in actual_ports]
@@ -101,6 +157,51 @@ def discovery(
 
 
 class SSHHardeningTests(unittest.TestCase):
+    def test_managed_dropin_explicitly_disables_empty_passwords(self) -> None:
+        text = render_sshd_dropin(
+            {25000},
+            {
+                "PubkeyAuthentication": "yes",
+                "PasswordAuthentication": "no",
+                "KbdInteractiveAuthentication": "no",
+                "PermitRootLogin": "no",
+                "PermitEmptyPasswords": "no",
+            },
+        )
+
+        self.assertIn("PermitEmptyPasswords no", text)
+
+    def test_effective_verifier_rejects_permit_empty_passwords_yes(self) -> None:
+        disc = discovery()
+        disc.effective_config["permitemptypasswords"] = ["yes"]
+        data = {
+            "mode": "managed",
+            "ports": [22],
+            "activation_mode": "service",
+            "auth_values": {"PermitEmptyPasswords": "no"},
+        }
+        with patch("app.ssh_hardening.run_command", return_value=CommandResult([], 0, "", "")):
+            self.assertFalse(verify_discovered_ssh_state(disc, data))
+
+    def test_managed_verifier_requires_explicit_permit_empty_passwords_dropin(self) -> None:
+        disc = discovery()
+        data = {
+            "mode": "managed",
+            "ports": [22],
+            "activation_mode": "service",
+            "auth_values": {"PermitEmptyPasswords": "no"},
+            "managed_dropin": "/etc/ssh/sshd_config.d/10-vps-bootstrap.conf",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            dropin = Path(directory) / "10-vps-bootstrap.conf"
+            dropin.write_text("Port 22\n", encoding="utf-8")
+            with patch("app.ssh_hardening.MANAGED_SSHD_DROPIN", dropin), patch(
+                "app.ssh_hardening.run_command", return_value=CommandResult([], 0, "", "")
+            ):
+                self.assertFalse(verify_discovered_ssh_state(disc, data))
+                dropin.write_text("Port 22\nPermitEmptyPasswords    no\n", encoding="utf-8")
+                self.assertTrue(verify_discovered_ssh_state(disc, data))
+
     def test_detect_ssh_socket_mode(self) -> None:
         mode = detect_activation_mode(SystemdUnitState("inactive", "disabled"), SystemdUnitState("active", "enabled", listen_streams=[22]), [])
 
@@ -325,6 +426,8 @@ class SSHHardeningTests(unittest.TestCase):
         self.assertTrue(plan.requires_two_port_confirmation)
         self.assertTrue(plan.requires_publickey_confirmation)
         self.assertEqual(command, publickey_only_second_session_command(disc, 25000))
+        self.assertIn("-i <path-to-private-key>", command)
+        self.assertIn("-o IdentitiesOnly=yes", command)
         self.assertIn("-o PreferredAuthentications=publickey", command)
         self.assertIn("-o PasswordAuthentication=no", command)
         self.assertIn("-p 25000 example-user@192.0.2.10", command)
@@ -337,14 +440,32 @@ class SSHHardeningTests(unittest.TestCase):
 
         self.assertFalse(plan.requires_two_port_confirmation)
         self.assertTrue(plan.requires_publickey_confirmation)
+        self.assertIn("-i <path-to-private-key>", command)
+        self.assertIn("-o IdentitiesOnly=yes", command)
         self.assertIn("-o PreferredAuthentications=publickey", command)
         self.assertIn("-o PasswordAuthentication=no", command)
-        self.assertIn("-p 22 example-user@192.0.2.10", command)
+        self.assertNotIn(" -p ", command)
+        self.assertTrue(command.endswith("example-user@192.0.2.10"))
 
     def test_active_ufw_without_new_allow_rule_blocks_unsafe_finalization(self) -> None:
-        plan = build_ssh_plan(discovery(ufw_active=True, ufw_allowed={22}), 25000)
+        with patch("app.ssh_hardening.managed_ufw_is_available", return_value=False):
+            plan = build_ssh_plan(discovery(ufw_active=True, ufw_allowed={22}), 25000)
 
         self.assertTrue(any("UFW is active" in reason for reason in plan.blocked_reasons))
+
+    def test_managed_ufw_active_permits_new_port_for_transaction_prepare(self) -> None:
+        with patch("app.ssh_hardening.managed_ufw_is_available", return_value=True):
+            plan = build_ssh_plan(discovery(ufw_active=True, ufw_allowed={22}), 25000)
+
+        self.assertFalse(plan.blocked_reasons)
+        self.assertEqual(plan.old_ports, {22})
+        self.assertEqual(plan.target_ports, {22, 25000})
+
+    def test_unmanaged_active_ufw_still_blocks_new_port(self) -> None:
+        with patch("app.ssh_hardening.managed_ufw_is_available", return_value=False):
+            plan = build_ssh_plan(discovery(ufw_active=True, ufw_allowed={22}), 25000)
+
+        self.assertIn("UFW is active", "; ".join(plan.blocked_reasons))
 
     def test_root_session_without_verified_sudo_user_blocks_permit_root_no(self) -> None:
         plan = build_ssh_plan(discovery(sudo_user=False, reliable_key=True, current_user="root", admin_user="root"), None, keep_current_port=True)
@@ -503,9 +624,23 @@ class SSHHardeningTests(unittest.TestCase):
     def test_publickey_second_session_command_uses_discovered_ipv4(self) -> None:
         command = publickey_only_second_session_command(discovery(), 25000)
 
+        self.assertIn("-i <path-to-private-key>", command)
+        self.assertIn("-o IdentitiesOnly=yes", command)
         self.assertIn("-o PreferredAuthentications=publickey", command)
         self.assertIn("-o PasswordAuthentication=no", command)
         self.assertIn("-p 25000 example-user@192.0.2.10", command)
+
+    def test_publickey_migration_instructions_explain_client_identity_selection(self) -> None:
+        rendered = "\n".join(publickey_only_second_session_instructions(discovery(), 25000))
+
+        self.assertIn("PRIVATE key corresponding to the configured public key", rendered)
+        self.assertIn("not a default OpenSSH identity", rendered)
+        self.assertIn("ssh-agent or OpenSSH config", rendered)
+        self.assertIn("-i <path-to-private-key>", rendered)
+        self.assertIn("-o IdentitiesOnly=yes", rendered)
+        self.assertIn("may be omitted", rendered)
+        self.assertNotIn("C:\\", rendered)
+        self.assertNotIn("/home/", rendered)
 
     def test_publickey_second_session_command_formats_ipv6(self) -> None:
         disc = discovery()
@@ -638,6 +773,32 @@ class SSHHardeningTests(unittest.TestCase):
         self.assertEqual(plan.auth_values["PermitRootLogin"], "no")
         self.assertFalse(plan.requires_sudo_confirmation)
 
+    def test_nopasswd_root_disable_validation_uses_noninteractive_policy(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            print_sudo_validation_instruction("nopasswd")
+
+        rendered = output.getvalue()
+        self.assertIn("sudo -k", rendered)
+        self.assertIn("sudo -n true", rendered)
+        self.assertIn("sudo -n whoami", rendered)
+        self.assertIn("must print root", rendered)
+        self.assertNotIn("sudo -v", rendered)
+
+    def test_password_required_root_disable_validation_proves_pre_and_post_auth_states(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            print_sudo_validation_instruction("password_required")
+
+        rendered = output.getvalue()
+        self.assertIn("sudo -k", rendered)
+        self.assertIn("EXPECTED TO FAIL", rendered)
+        self.assertIn("not a bootstrap failure", rendered)
+        self.assertIn("sudo -v", rendered)
+        self.assertIn("echo $?  # must print: 0", rendered)
+
     def test_sudo_confirmation_default_no_rolls_back_before_root_disable_finalization(self) -> None:
         plan = SSHPlan(
             {22},
@@ -651,15 +812,18 @@ class SSHHardeningTests(unittest.TestCase):
             requires_sudo_confirmation=True,
         )
 
+        output = StringIO()
         with patch("app.ssh_hardening.backup_ssh_files", return_value={}), patch("app.ssh_hardening.write_atomic"), patch(
             "app.ssh_hardening.apply_systemd_ssh"
         ), patch("app.ssh_hardening.validate_candidate_effective"), patch("app.ssh_hardening.verify_transition_listeners", return_value=True), patch(
             "app.ssh_hardening.rollback_ssh"
-        ) as rollback, patch("builtins.input", side_effect=["y", "n"]):
+        ) as rollback, patch("builtins.input", side_effect=["y", "n"]), redirect_stdout(output):
             with self.assertRaisesRegex(SSHHardeningError, "Sudo validation"):
-                apply_ssh_plan(plan)
+                apply_ssh_plan(plan, sudo_mode="nopasswd")
 
         rollback.assert_called_once()
+        self.assertIn("sudo -n whoami", output.getvalue())
+        self.assertNotIn("sudo -v", output.getvalue())
 
     def test_sudo_confirmation_no_saves_completed_rollback_state(self) -> None:
         plan = SSHPlan(
@@ -831,6 +995,25 @@ class SSHHardeningTests(unittest.TestCase):
         self.assertNotIn("vps-bootstrap full", result["reason"])
         rollback.assert_called_once()
 
+    def test_interrupted_recovery_passes_component_metadata_to_transaction_rollback(self) -> None:
+        metadata = {"firewall": {"managed": True, "added_ports": [25000]}, "fail2ban": {"managed": True, "backup": "/tmp/example"}}
+        data = {
+            "mode": "migration",
+            "interrupted_migration": True,
+            "old_ports": [22],
+            "activation_mode": "service",
+            "backup_metadata": {"dropin": None},
+            "component_metadata": metadata,
+        }
+
+        with patch("builtins.input", return_value="2"), patch("app.ssh_hardening.rollback_ssh_transaction", return_value={"cleanup_pending": ["ufw:25000/tcp"]}) as rollback:
+            result = recover_interrupted_migration(data)
+
+        rollback.assert_called_once()
+        self.assertIs(rollback.call_args.args[3], metadata)
+        self.assertEqual(result["cleanup_pending"], ["ufw:25000/tcp"])
+        self.assertEqual(result["component_metadata"], metadata)
+
     def test_interrupted_recovery_missing_backup_blocks_without_restore(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "10-vps-bootstrap.conf"
@@ -967,6 +1150,399 @@ class SSHHardeningTests(unittest.TestCase):
         self.assertIn("transition_active", stages)
         self.assertIn("awaiting_second_session", stages)
         rollback.assert_called_once()
+
+    def test_ssh_transaction_prepares_firewall_and_fail2ban_then_finalizes(self) -> None:
+        plan = SSHPlan(
+            old_ports={22},
+            target_ports={22, 25000},
+            final_ports={25000},
+            activation_mode="service",
+            auth_values={"PubkeyAuthentication": "yes", "PasswordAuthentication": "yes"},
+            transition_auth_values={"PubkeyAuthentication": "yes", "PasswordAuthentication": "yes"},
+            requires_two_port_confirmation=True,
+        )
+        calls: list[str] = []
+
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration",
+            side_effect=lambda old, transition: calls.append("firewall-prepare") or {"managed": True, "added_ports": [25000]},
+        ), patch(
+            "app.ssh_hardening.prepare_fail2ban_ssh_migration",
+            side_effect=lambda old, transition: calls.append("fail2ban-prepare") or {"managed": True, "backup": None},
+        ), patch("app.ssh_hardening.write_atomic", side_effect=lambda *args, **kwargs: calls.append("write")), patch(
+            "app.ssh_hardening.validate_candidate_effective", side_effect=lambda *args, **kwargs: calls.append("candidate")
+        ), patch("app.ssh_hardening.apply_systemd_ssh", side_effect=lambda activation: calls.append("systemd")), patch(
+            "app.ssh_hardening.verify_transition_listeners", return_value=True
+        ), patch("app.ssh_hardening.confirm", return_value=True), patch(
+            "app.ssh_hardening.finalize_fail2ban_ssh_migration", side_effect=lambda final, meta: calls.append("fail2ban-final")
+        ), patch("app.ssh_hardening.finalize_firewall_ssh_migration", side_effect=lambda final, old, meta: calls.append("firewall-final")), patch(
+            "app.ssh_hardening.verify_expected_ssh_state", side_effect=lambda state: calls.append("ssh-final-verified") or True
+        ), patch(
+            "app.ssh_hardening.verify_transaction_components", return_value=True
+        ):
+            state = apply_ssh_plan(plan, discovery=discovery(ports={22}, listeners={22}))
+
+        self.assertEqual(state["ports"], [25000])
+        self.assertLess(calls.index("firewall-prepare"), calls.index("systemd"))
+        self.assertIn("fail2ban-prepare", calls)
+        self.assertLess(calls.index("ssh-final-verified"), calls.index("fail2ban-final"))
+        self.assertLess(calls.index("ssh-final-verified"), calls.index("firewall-final"))
+
+    def test_ssh_transaction_rolls_back_components_on_second_session_failure(self) -> None:
+        plan = SSHPlan(
+            old_ports={22},
+            target_ports={22, 25000},
+            final_ports={25000},
+            activation_mode="service",
+            auth_values={"PubkeyAuthentication": "yes", "PasswordAuthentication": "yes"},
+            transition_auth_values={"PubkeyAuthentication": "yes", "PasswordAuthentication": "yes"},
+            requires_two_port_confirmation=True,
+        )
+        calls: list[str] = []
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value={"managed": True, "added_ports": [25000]}
+        ), patch("app.ssh_hardening.prepare_fail2ban_ssh_migration", return_value={"managed": True, "backup": None}), patch(
+            "app.ssh_hardening.write_atomic"
+        ), patch("app.ssh_hardening.validate_candidate_effective"), patch("app.ssh_hardening.apply_systemd_ssh"), patch(
+            "app.ssh_hardening.verify_transition_listeners", return_value=True
+        ), patch("app.ssh_hardening.confirm", return_value=False), patch(
+            "app.ssh_hardening.restore_firewall_old_ssh_access", side_effect=lambda meta, old: calls.append("ufw-old-restored")
+        ), patch("app.ssh_hardening.verify_firewall_old_ssh_access", return_value=True), patch(
+            "app.ssh_hardening.rollback_ssh", side_effect=lambda backups, activation, old: calls.append("ssh")
+        ), patch("app.ssh_hardening.rollback_fail2ban_ssh_migration", side_effect=lambda meta: calls.append("fail2ban")), patch(
+            "app.ssh_hardening.rollback_firewall_ssh_migration", side_effect=lambda meta: calls.append("firewall")
+        ):
+            with self.assertRaises(SSHHardeningError):
+                apply_ssh_plan(plan, discovery=discovery(ports={22}, listeners={22}))
+
+        self.assertEqual(calls, ["ufw-old-restored", "ssh", "fail2ban", "firewall"])
+
+    def test_transaction_rollback_stops_before_ufw_cleanup_on_fail2ban_error(self) -> None:
+        calls: list[str] = []
+        metadata = {"firewall": {"managed": True, "added_ports": [25000]}, "fail2ban": {"managed": True, "backup": "/tmp/example"}}
+
+        def fail2ban_rollback(meta):
+            calls.append("fail2ban")
+            raise RuntimeError("restart failed")
+
+        with patch("app.ssh_hardening.restore_firewall_old_ssh_access", side_effect=lambda meta, old: calls.append("ufw-old-restored")), patch(
+            "app.ssh_hardening.verify_firewall_old_ssh_access", return_value=True
+        ), patch("app.ssh_hardening.rollback_ssh", side_effect=lambda backups, activation, old: calls.append("ssh")), patch(
+            "app.ssh_hardening.rollback_fail2ban_ssh_migration", side_effect=fail2ban_rollback
+        ), patch("app.ssh_hardening.rollback_firewall_ssh_migration", side_effect=lambda meta: calls.append("firewall")):
+            with self.assertRaisesRegex(SSHHardeningError, "Fail2ban rollback failed"):
+                rollback_ssh_transaction({"dropin": None, "socket": None}, "service", {22}, metadata)
+
+        self.assertEqual(calls, ["ufw-old-restored", "ssh", "fail2ban"])
+
+    def test_transaction_rollback_reports_ufw_cleanup_pending_without_failure(self) -> None:
+        metadata = {"firewall": {"managed": True, "added_ports": [25000]}, "fail2ban": {"managed": False}}
+
+        def firewall_rollback(meta):
+            meta["cleanup_pending"] = [25000]
+
+        with patch("app.ssh_hardening.restore_firewall_old_ssh_access"), patch("app.ssh_hardening.verify_firewall_old_ssh_access", return_value=True), patch(
+            "app.ssh_hardening.rollback_ssh"
+        ), patch("app.ssh_hardening.rollback_fail2ban_ssh_migration"), patch(
+            "app.ssh_hardening.rollback_firewall_ssh_migration", side_effect=firewall_rollback
+        ):
+            result = rollback_ssh_transaction({"dropin": None, "socket": None}, "service", {22}, metadata)
+
+        self.assertEqual(result["cleanup_pending"], ["ufw:25000/tcp"])
+
+    def test_interruption_after_ufw_prepare_rolls_back_component_metadata(self) -> None:
+        plan = SSHPlan({22}, {22, 25000}, {25000}, "service", {"PubkeyAuthentication": "yes"}, {"PubkeyAuthentication": "yes"}, requires_two_port_confirmation=True)
+        saved: list[dict] = []
+        firewall_meta = {"managed": True, "added_ports": [25000]}
+
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value=firewall_meta
+        ), patch("app.ssh_hardening.write_atomic", side_effect=SSHHardeningError("write failed")), patch("app.ssh_hardening.rollback_ssh_transaction") as rollback:
+            with self.assertRaises(SSHHardeningError):
+                apply_ssh_plan(plan, save_state=lambda state: saved.append(dict(state)), discovery=discovery())
+
+        rollback.assert_called_once()
+        self.assertEqual(rollback.call_args.args[3]["firewall"], firewall_meta)
+        self.assertTrue(any(state.get("component_metadata", {}).get("firewall", {}).get("added_ports") == [25000] for state in saved))
+
+    def test_interruption_after_ssh_transition_rolls_back_components(self) -> None:
+        plan = SSHPlan({22}, {22, 25000}, {25000}, "service", {"PubkeyAuthentication": "yes"}, {"PubkeyAuthentication": "yes"}, requires_two_port_confirmation=True)
+
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value={"managed": True, "added_ports": [25000]}
+        ), patch("app.ssh_hardening.write_atomic"), patch("app.ssh_hardening.validate_candidate_effective"), patch(
+            "app.ssh_hardening.apply_systemd_ssh"
+        ), patch("app.ssh_hardening.verify_transition_listeners", return_value=False), patch("app.ssh_hardening.rollback_ssh_transaction") as rollback:
+            with self.assertRaisesRegex(SSHHardeningError, "listener"):
+                apply_ssh_plan(plan, discovery=discovery())
+
+        rollback.assert_called_once()
+
+    def test_interruption_after_fail2ban_prepare_rolls_back_components(self) -> None:
+        plan = SSHPlan({22}, {22, 25000}, {25000}, "service", {"PubkeyAuthentication": "yes"}, {"PubkeyAuthentication": "yes"}, requires_two_port_confirmation=True)
+
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value={"managed": True, "added_ports": [25000]}
+        ), patch("app.ssh_hardening.write_atomic"), patch("app.ssh_hardening.validate_candidate_effective"), patch(
+            "app.ssh_hardening.apply_systemd_ssh"
+        ), patch("app.ssh_hardening.verify_transition_listeners", return_value=True), patch(
+            "app.ssh_hardening.prepare_fail2ban_ssh_migration", side_effect=SSHHardeningError("fail2ban prepare failed")
+        ), patch("app.ssh_hardening.rollback_ssh_transaction") as rollback:
+            with self.assertRaisesRegex(SSHHardeningError, "fail2ban prepare"):
+                apply_ssh_plan(plan, discovery=discovery())
+
+        rollback.assert_called_once()
+
+    def test_interruption_after_finalization_start_rolls_back_components(self) -> None:
+        plan = SSHPlan({22}, {22, 25000}, {25000}, "service", {"PubkeyAuthentication": "yes"}, {"PubkeyAuthentication": "yes"}, requires_two_port_confirmation=True)
+
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value={"managed": True, "added_ports": [25000]}
+        ), patch("app.ssh_hardening.prepare_fail2ban_ssh_migration", return_value={"managed": True, "backup": None}), patch(
+            "app.ssh_hardening.write_atomic"
+        ), patch("app.ssh_hardening.validate_candidate_effective"), patch("app.ssh_hardening.apply_systemd_ssh"), patch(
+            "app.ssh_hardening.verify_transition_listeners", return_value=True
+        ), patch("app.ssh_hardening.confirm", return_value=True), patch(
+            "app.ssh_hardening.verify_expected_ssh_state", return_value=True
+        ), patch(
+            "app.ssh_hardening.finalize_fail2ban_ssh_migration", side_effect=SSHHardeningError("final fail2ban failed")
+        ), patch("app.ssh_hardening.rollback_ssh_transaction") as rollback:
+            with self.assertRaisesRegex(SSHHardeningError, "final fail2ban"):
+                apply_ssh_plan(plan, discovery=discovery())
+
+        rollback.assert_called_once()
+
+    def test_final_listener_failure_blocks_fail2ban_and_ufw_finalization(self) -> None:
+        plan = SSHPlan(
+            {22},
+            {22, 25000},
+            {25000},
+            "service",
+            {"PubkeyAuthentication": "yes"},
+            {"PubkeyAuthentication": "yes"},
+            requires_two_port_confirmation=True,
+        )
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value={"managed": False}
+        ), patch("app.ssh_hardening.prepare_fail2ban_ssh_migration", return_value={"managed": False}), patch(
+            "app.ssh_hardening.write_atomic"
+        ), patch("app.ssh_hardening.validate_candidate_effective"), patch("app.ssh_hardening.apply_systemd_ssh"), patch(
+            "app.ssh_hardening.verify_transition_listeners", return_value=True
+        ), patch("app.ssh_hardening.confirm", return_value=True), patch(
+            "app.ssh_hardening.verify_expected_ssh_state", return_value=False
+        ), patch("app.ssh_hardening.finalize_fail2ban_ssh_migration") as fail2ban_finalize, patch(
+            "app.ssh_hardening.finalize_firewall_ssh_migration"
+        ) as firewall_finalize, patch(
+            "app.ssh_hardening.rollback_ssh_transaction",
+            return_value={"rollback_completed": True, "cleanup_pending": [], "component_states": {}},
+        ) as rollback:
+            with self.assertRaisesRegex(SSHHardeningError, "before Fail2ban/UFW"):
+                apply_ssh_plan(plan, discovery=discovery())
+
+        fail2ban_finalize.assert_not_called()
+        firewall_finalize.assert_not_called()
+        rollback.assert_called_once()
+
+    def test_failure_after_old_ufw_removal_rolls_back_with_removal_metadata(self) -> None:
+        plan = SSHPlan(
+            {22},
+            {22, 25000},
+            {25000},
+            "service",
+            {"PubkeyAuthentication": "yes"},
+            {"PubkeyAuthentication": "yes"},
+            requires_two_port_confirmation=True,
+        )
+        firewall_meta = {"managed": True, "added_ports": [25000], "old_ports": [22]}
+
+        def finalize_firewall(final_ports, old_ports, metadata):
+            metadata["removed_old_ports"] = [22]
+            metadata["final_state"] = {"mode": "managed", "ssh_ports": [25000]}
+
+        with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+            "app.ssh_hardening.prepare_firewall_ssh_migration", return_value=firewall_meta
+        ), patch(
+            "app.ssh_hardening.prepare_fail2ban_ssh_migration", return_value={"managed": False}
+        ), patch("app.ssh_hardening.write_atomic"), patch("app.ssh_hardening.validate_candidate_effective"), patch(
+            "app.ssh_hardening.apply_systemd_ssh"
+        ), patch("app.ssh_hardening.verify_transition_listeners", return_value=True), patch(
+            "app.ssh_hardening.confirm", return_value=True
+        ), patch("app.ssh_hardening.verify_expected_ssh_state", return_value=True), patch(
+            "app.ssh_hardening.finalize_firewall_ssh_migration", side_effect=finalize_firewall
+        ), patch("app.ssh_hardening.verify_transaction_components", return_value=False), patch(
+            "app.ssh_hardening.rollback_ssh_transaction",
+            return_value={"rollback_completed": True, "cleanup_pending": [], "component_states": {}},
+        ) as rollback:
+            with self.assertRaisesRegex(SSHHardeningError, "cross-component"):
+                apply_ssh_plan(plan, discovery=discovery())
+
+        self.assertEqual(rollback.call_args.args[3]["firewall"]["removed_old_ports"], [22])
+
+    def test_rollback_ssh_failure_never_removes_new_firewall_access(self) -> None:
+        metadata = {"firewall": {"managed": True, "added_ports": [25000]}, "fail2ban": {"managed": True}}
+        with patch("app.ssh_hardening.restore_firewall_old_ssh_access"), patch(
+            "app.ssh_hardening.verify_firewall_old_ssh_access", return_value=True
+        ), patch("app.ssh_hardening.rollback_ssh", side_effect=SSHHardeningError("old listener missing")), patch(
+            "app.ssh_hardening.rollback_fail2ban_ssh_migration"
+        ) as fail2ban_rollback, patch("app.ssh_hardening.rollback_firewall_ssh_migration") as firewall_cleanup:
+            with self.assertRaisesRegex(SSHHardeningError, "NEW_PORT firewall access was preserved"):
+                rollback_ssh_transaction({"dropin": None, "socket": None}, "service", {22}, metadata)
+
+        fail2ban_rollback.assert_not_called()
+        firewall_cleanup.assert_not_called()
+
+    def test_rollback_ufw_old_rule_restoration_failure_leaves_ssh_unchanged(self) -> None:
+        metadata = {"firewall": {"managed": True, "added_ports": [25000]}, "fail2ban": {"managed": True}}
+        with patch(
+            "app.ssh_hardening.restore_firewall_old_ssh_access", side_effect=RuntimeError("cannot restore old allow")
+        ), patch("app.ssh_hardening.rollback_ssh") as ssh_rollback, patch(
+            "app.ssh_hardening.rollback_firewall_ssh_migration"
+        ) as firewall_cleanup:
+            with self.assertRaisesRegex(SSHHardeningError, "SSH was left unchanged"):
+                rollback_ssh_transaction({"dropin": None, "socket": None}, "service", {22}, metadata)
+
+        ssh_rollback.assert_not_called()
+        firewall_cleanup.assert_not_called()
+
+    def test_cleanup_only_failure_keeps_rollback_completed_with_pending_access(self) -> None:
+        metadata = {"firewall": {"managed": True, "added_ports": [25000]}, "fail2ban": {"managed": False}}
+        with patch("app.ssh_hardening.restore_firewall_old_ssh_access"), patch(
+            "app.ssh_hardening.verify_firewall_old_ssh_access", return_value=True
+        ), patch("app.ssh_hardening.rollback_ssh"), patch("app.ssh_hardening.rollback_fail2ban_ssh_migration"), patch(
+            "app.ssh_hardening.rollback_firewall_ssh_migration", side_effect=RuntimeError("delete failed")
+        ):
+            result = rollback_ssh_transaction({"dropin": None, "socket": None}, "service", {22}, metadata)
+
+        self.assertTrue(result["rollback_completed"])
+        self.assertTrue(any(item.startswith("ufw:25000/tcp") for item in result["cleanup_pending"]))
+
+    def test_managed_ssh_drift_requires_explicit_command_without_write(self) -> None:
+        data = {"mode": "managed", "ports": [25000], "activation_mode": "service", "auth_values": {"PubkeyAuthentication": "yes"}}
+        drifted = discovery(ports={22}, listeners={22}, ssh_listeners={22})
+        with patch("app.ssh_hardening.discover_ssh", return_value=drifted), patch("app.ssh_hardening.write_atomic") as write, patch(
+            "app.ssh_hardening.apply_systemd_ssh"
+        ) as systemd:
+            with self.assertRaisesRegex(SSHHardeningError, "sudo vps-bootstrap ssh"):
+                ensure_ssh_hardening_from_state(data)
+
+        write.assert_not_called()
+        systemd.assert_not_called()
+
+    def test_v020_greenfield_admin_firewall_fail2ban_ssh_order(self) -> None:
+        from app.admin_user import AdminUserPlan, apply_admin_user_plan
+        from app.config import Paths
+        from app.root_hardening import AdminGroupAudit, ensure_root_hardening_from_state
+
+        with tempfile.TemporaryDirectory() as directory, deny_real_system_path_access():
+            home = Path(directory) / "adminuser"
+            home.mkdir()
+            order: list[str] = []
+
+            def admin_run(args, timeout=10):
+                if args[:1] == ["useradd"]:
+                    order.append("admin-user-created")
+                elif args[:1] == ["usermod"]:
+                    order.append("admin-sudo-added")
+                elif args[:1] == ["chown"]:
+                    order.append("admin-key-ownership")
+                return CommandResult(args, 0, "", "")
+
+            with patch("app.admin_user.fingerprint_public_key", return_value="SHA256:testfp"), patch(
+                "app.admin_user.pwd.getpwnam", return_value=type("Entry", (), {"pw_dir": str(home), "pw_uid": 1001, "pw_gid": 1001})()
+            ), patch("app.admin_user.run_command", side_effect=admin_run), patch(
+                "app.admin_user.setup_password_interactively", side_effect=lambda username: order.append("admin-passwd")
+            ), patch(
+                "app.admin_user.configure_sudo_policy", side_effect=lambda username, mode: order.append("admin-sudo-policy")
+            ), patch("app.admin_user.confirm", return_value=True):
+                admin_state = apply_admin_user_plan(AdminUserPlan("adminuser", True, "ssh-ed25519 QUJDREVGR0g= example"))
+
+            root_paths = Paths(state_dir=Path(directory) / "state")
+            with patch("app.root_hardening.verify_admin_user_state", return_value=True), patch(
+                "app.root_hardening.audit_admin_group", return_value=AdminGroupAudit(False, None, [], False)
+            ), patch("app.root_hardening.root_authorized_keys_inventory", return_value=([], 0)), patch(
+                "app.root_hardening.display_root_key_audit"
+            ), patch("app.root_hardening.choose_root_key_action", return_value=("remove_all", set())), patch(
+                "app.root_hardening.apply_root_key_action", side_effect=lambda *args: order.append("root-keys-audited") or {"action": "remove_all", "fingerprints": [], "verified": True}
+            ), patch("app.root_hardening.choose_root_password_policy", return_value="lock"), patch(
+                "app.root_hardening.apply_root_password_policy", side_effect=lambda action: order.append("root-password-policy") or {"action": action, "status": "L", "locked": True, "verified": True}
+            ), patch("app.root_hardening.verify_root_hardening_state", return_value=True):
+                ensure_root_hardening_from_state({}, admin_state, root_paths)
+
+            order.append("ufw-old-allowed")
+            order.append("fail2ban-old-configured")
+            plan = SSHPlan(
+                old_ports={22},
+                target_ports={22, 25000},
+                final_ports={25000},
+                activation_mode="service",
+                auth_values={
+                    "PubkeyAuthentication": "yes",
+                    "PasswordAuthentication": "no",
+                    "KbdInteractiveAuthentication": "no",
+                    "PermitRootLogin": "no",
+                    "PermitEmptyPasswords": "no",
+                },
+                transition_auth_values={
+                    "PubkeyAuthentication": "yes",
+                    "PasswordAuthentication": "yes",
+                    "KbdInteractiveAuthentication": "yes",
+                    "PermitRootLogin": "yes",
+                    "PermitEmptyPasswords": "no",
+                },
+                requires_two_port_confirmation=True,
+                requires_publickey_confirmation=True,
+                requires_sudo_confirmation=True,
+            )
+
+            with patch("app.ssh_hardening.backup_ssh_files", return_value={"dropin": None, "socket": None}), patch(
+                "app.ssh_hardening.prepare_firewall_ssh_migration", side_effect=lambda old, transition: order.append("ufw-new-allowed") or {"managed": True, "added_ports": [25000]}
+            ), patch(
+                "app.ssh_hardening.prepare_fail2ban_ssh_migration", side_effect=lambda old, transition: order.append("fail2ban-old-new-configured") or {"managed": True, "backup": None}
+            ), patch("app.ssh_hardening.write_atomic", side_effect=lambda *args, **kwargs: order.append("ssh-write")), patch(
+                "app.ssh_hardening.validate_candidate_effective", side_effect=lambda *args, **kwargs: order.append("sshd-effective-validated")
+            ), patch("app.ssh_hardening.apply_systemd_ssh", side_effect=lambda activation: order.append("ssh-applied")), patch(
+                "app.ssh_hardening.verify_transition_listeners", return_value=True
+            ), patch("app.ssh_hardening.confirm", return_value=True), patch(
+                "app.ssh_hardening.finalize_fail2ban_ssh_migration", side_effect=lambda final, meta: order.append("fail2ban-new-configured")
+            ), patch("app.ssh_hardening.finalize_firewall_ssh_migration", side_effect=lambda final, old, meta: order.append("ufw-old-removed")), patch(
+                "app.ssh_hardening.verify_expected_ssh_state", side_effect=lambda state: order.append("ssh-final-verified") or True
+            ), patch(
+                "app.ssh_hardening.verify_transaction_components", return_value=True
+            ):
+                state = apply_ssh_plan(plan, discovery=discovery(ports={22}, listeners={22}, reliable_key=False, admin_user="adminuser"))
+
+        self.assertEqual(state["ports"], [25000])
+        expected_order = [
+            "admin-user-created",
+            "admin-passwd",
+            "admin-sudo-added",
+            "admin-key-ownership",
+            "admin-sudo-policy",
+            "root-keys-audited",
+            "root-password-policy",
+            "ufw-old-allowed",
+            "fail2ban-old-configured",
+            "ufw-new-allowed",
+            "ssh-write",
+            "sshd-effective-validated",
+            "ssh-applied",
+            "fail2ban-old-new-configured",
+            "ssh-write",
+            "sshd-effective-validated",
+            "ssh-applied",
+            "ssh-final-verified",
+            "fail2ban-new-configured",
+            "ufw-old-removed",
+        ]
+        cursor = 0
+        for item in expected_order:
+            try:
+                cursor = order.index(item, cursor) + 1
+            except ValueError as exc:
+                raise AssertionError(f"{item!r} was not found in order after position {cursor}: {order}") from exc
+        self.assertEqual(state["auth_values"]["PasswordAuthentication"], "no")
+        self.assertEqual(state["auth_values"]["PermitRootLogin"], "no")
+        self.assertEqual(state["auth_values"]["PermitEmptyPasswords"], "no")
 
 
 if __name__ == "__main__":

@@ -18,10 +18,20 @@ from app.base_setup import (
     ensure_time_sync,
     verify_time_sync,
 )
+from app.admin_user import (
+    AdminUserError,
+    SUDO_MODE_PASSWORD_REQUIRED,
+    ensure_admin_user_from_state,
+    verify_admin_user_state,
+)
 from app.config import BASE_PHASES, DEFAULT_PHASES, Paths
+from app.fail2ban import Fail2banError, ensure_fail2ban_from_state, verify_fail2ban_state
+from app.firewall import FirewallError, ensure_firewall_from_state, verify_firewall_state
 from app.preflight import run_preflight
 from app.results import Severity
+from app.root_hardening import RootHardeningError, ensure_root_hardening_from_state, verify_root_hardening_state
 from app.safe_logging import add_file_handler
+from app.security_updates import SecurityUpdatesError, ensure_security_updates_from_state, verify_security_updates_state
 from app.ssh_hardening import SSHHardeningError, ensure_ssh_hardening_from_state, verify_expected_ssh_state
 from app.state import InstallState, PhaseStatus
 from app.swap import SwapError, ensure_swap_from_state, verify_swap_state
@@ -67,8 +77,10 @@ def apply_phase_scope(state: InstallState, requested_order: list[str], scope: st
     if scope == "resume":
         if not state.phase_order:
             state.phase_order = list(state.phases.keys())
-        if has_interrupted_ssh_migration(state) and "ssh_hardening" not in state.phase_order:
-            state.phase_order.append("ssh_hardening")
+        if has_interrupted_ssh_migration(state):
+            remaining = [name for name in state.phase_order if name != "ssh_hardening"]
+            state.phases.setdefault("ssh_hardening", InstallState.fresh(["ssh_hardening"]).phases["ssh_hardening"])
+            return ["ssh_hardening", *remaining]
         return state.phase_order
     if scope == "base":
         state.phase_order = list(BASE_PHASES)
@@ -96,7 +108,15 @@ def build_phase_handlers(paths: Paths, project_root: Path, state: InstallState |
         "config": (lambda: verify_default_config(paths), lambda: ensure_default_config(paths)),
         "time_sync": (verify_time_sync, ensure_time_sync),
         "swap": (lambda: verify_swap_state(state.phases["swap"].data), lambda: _execute_swap(state)),
+        "admin_user": (lambda: verify_admin_user_state(state.phases["admin_user"].data), lambda: _execute_admin_user(state)),
+        "root_hardening": (
+            lambda: verify_root_hardening_state(state.phases["root_hardening"].data, state.phases["admin_user"].data, paths),
+            lambda: _execute_root_hardening(state, paths),
+        ),
+        "firewall": (lambda: verify_firewall_state(state.phases["firewall"].data), lambda: _execute_firewall(state)),
+        "fail2ban": (lambda: verify_fail2ban_state(state.phases["fail2ban"].data), lambda: _execute_fail2ban(state)),
         "ssh_hardening": (lambda: verify_expected_ssh_state(state.phases["ssh_hardening"].data), lambda: _execute_ssh_hardening(state, paths)),
+        "security_updates": (lambda: verify_security_updates_state(state.phases["security_updates"].data), lambda: _execute_security_updates(state)),
         "journald_structure": (lambda: verify_journald_structure(paths), lambda: ensure_journald_structure(paths)),
         "ansible_foundation": (lambda: verify_ansible_foundation(project_root), lambda: ensure_ansible_foundation(project_root)),
     }
@@ -120,15 +140,175 @@ def _execute_swap(state: InstallState) -> None:
         raise PhaseSkipped("swap", data.get("reason", "swap skipped"))
 
 
+def _execute_admin_user(state: InstallState) -> None:
+    data = ensure_admin_user_from_state(state.phases["admin_user"].data)
+    state.update_phase_data("admin_user", data)
+    if data.get("mode") == "skipped":
+        raise PhaseSkipped("admin_user", data.get("reason", "admin user skipped"))
+
+
+def _execute_root_hardening(state: InstallState, paths: Paths) -> None:
+    def save_progress(data: dict) -> None:
+        state.update_phase_data("root_hardening", data)
+        state.save(paths.state_file)
+
+    data = ensure_root_hardening_from_state(
+        state.phases["root_hardening"].data,
+        state.phases["admin_user"].data,
+        paths,
+        save_state=save_progress,
+    )
+    state.update_phase_data("root_hardening", data)
+    if data.get("mode") == "skipped":
+        raise PhaseSkipped("root_hardening", data.get("reason", "root hardening skipped"))
+
+
+def _execute_firewall(state: InstallState) -> None:
+    data = ensure_firewall_from_state(state.phases["firewall"].data)
+    state.update_phase_data("firewall", data)
+    if data.get("mode") == "skipped":
+        raise PhaseSkipped("firewall", data.get("reason", "firewall skipped"))
+
+
+def _execute_fail2ban(state: InstallState) -> None:
+    data = ensure_fail2ban_from_state(state.phases["fail2ban"].data)
+    state.update_phase_data("fail2ban", data)
+    if data.get("mode") == "skipped":
+        raise PhaseSkipped("fail2ban", data.get("reason", "Fail2ban skipped"))
+
+
 def _execute_ssh_hardening(state: InstallState, paths: Paths) -> None:
     def save_migration(data: dict) -> None:
         state.update_phase_data("ssh_hardening", data)
+        synchronize_ssh_component_states(state, data)
         state.save(paths.state_file)
 
-    data = ensure_ssh_hardening_from_state(state.phases["ssh_hardening"].data, save_state=save_migration)
+    data = ensure_ssh_hardening_from_state(
+        state.phases["ssh_hardening"].data,
+        save_state=save_migration,
+        sudo_mode=selected_admin_sudo_mode(state),
+    )
     state.update_phase_data("ssh_hardening", data)
+    synchronize_ssh_component_states(state, data)
     if data.get("mode") == "skipped":
         raise PhaseSkipped("ssh_hardening", data.get("reason", "SSH hardening skipped"))
+
+
+def synchronize_ssh_component_states(state: InstallState, ssh_data: dict) -> None:
+    component_states = ssh_data.get("component_states", {})
+    if not isinstance(component_states, dict):
+        return
+    for phase in ("firewall", "fail2ban"):
+        component_data = component_states.get(phase)
+        if not isinstance(component_data, dict):
+            continue
+        state.update_phase_data(phase, component_data)
+        if component_data.get("mode") == "managed":
+            state.set_phase(phase, PhaseStatus.DONE, "synchronized by SSH transaction")
+        elif component_data.get("mode") == "skipped":
+            state.set_phase(phase, PhaseStatus.SKIPPED, component_data.get("reason", "component skipped"))
+
+
+def selected_admin_sudo_mode(state: InstallState) -> str:
+    admin_phase = state.phases.get("admin_user")
+    if admin_phase is None:
+        return SUDO_MODE_PASSWORD_REQUIRED
+    return str(admin_phase.data.get("sudo_mode", SUDO_MODE_PASSWORD_REQUIRED))
+
+
+def _execute_security_updates(state: InstallState) -> None:
+    data = ensure_security_updates_from_state(state.phases["security_updates"].data)
+    state.update_phase_data("security_updates", data)
+    if data.get("mode") == "skipped":
+        raise PhaseSkipped("security_updates", data.get("reason", "security updates skipped"))
+
+
+def run_component_reconfigure(paths: Paths, phase: str, ensure, verify, error_type, logger=None) -> list[str]:
+    state = InstallState.load(paths.state_file) if paths.state_file.exists() else InstallState.fresh(DEFAULT_PHASES)
+    state.phases.setdefault(phase, InstallState.fresh([phase]).phases[phase])
+    try:
+        data = ensure(state.phases[phase].data, force_reconfigure=True)
+    except error_type as exc:
+        state.set_phase(phase, PhaseStatus.FAILED, str(exc))
+        state.save(paths.state_file)
+        if logger:
+            logger.error(str(exc), extra={"stage": phase, "result": "failed"})
+        raise SetupError(phase, str(exc), exc.diagnostics, retry_command=f"sudo vps-bootstrap {phase.replace('_', '-')}") from exc
+    state.update_phase_data(phase, data)
+    if data.get("mode") == "skipped":
+        state.set_phase(phase, PhaseStatus.SKIPPED, data.get("reason", f"{phase} skipped"))
+        state.save(paths.state_file)
+        return [f"SKIP {phase} [{data.get('reason', f'{phase} skipped')}]"]
+    if verify(data):
+        state.set_phase(phase, PhaseStatus.DONE, "verified")
+        state.save(paths.state_file)
+        return [f"DONE {phase}"]
+    state.set_phase(phase, PhaseStatus.FAILED, "verification failed")
+    state.save(paths.state_file)
+    raise SetupError(phase, f"Verification failed for {phase}", retry_command=f"sudo vps-bootstrap {phase.replace('_', '-')}")
+
+
+def run_admin_user_reconfigure(paths: Paths, logger=None) -> list[str]:
+    return run_component_reconfigure(paths, "admin_user", ensure_admin_user_from_state, verify_admin_user_state, AdminUserError, logger)
+
+
+def run_root_hardening_reconfigure(paths: Paths, logger=None) -> list[str]:
+    state = InstallState.load(paths.state_file) if paths.state_file.exists() else InstallState.fresh(DEFAULT_PHASES)
+    state.phases.setdefault("admin_user", InstallState.fresh(["admin_user"]).phases["admin_user"])
+    state.phases.setdefault("root_hardening", InstallState.fresh(["root_hardening"]).phases["root_hardening"])
+
+    def save_progress(data: dict) -> None:
+        state.update_phase_data("root_hardening", data)
+        state.save(paths.state_file)
+
+    try:
+        data = ensure_root_hardening_from_state(
+            state.phases["root_hardening"].data,
+            state.phases["admin_user"].data,
+            paths,
+            force_reconfigure=True,
+            save_state=save_progress,
+        )
+    except RootHardeningError as exc:
+        state.set_phase("root_hardening", PhaseStatus.FAILED, str(exc))
+        state.save(paths.state_file)
+        if logger:
+            logger.error(str(exc), extra={"stage": "root_hardening", "result": "failed"})
+        raise SetupError(
+            "root_hardening",
+            str(exc),
+            exc.diagnostics,
+            retry_command="sudo vps-bootstrap root-hardening",
+        ) from exc
+    state.update_phase_data("root_hardening", data)
+    if data.get("mode") == "skipped":
+        reason = data.get("reason", "root hardening skipped")
+        state.set_phase("root_hardening", PhaseStatus.SKIPPED, reason)
+        state.save(paths.state_file)
+        return [f"SKIP root_hardening [{reason}]"]
+    if verify_root_hardening_state(data, state.phases["admin_user"].data, paths):
+        state.set_phase("root_hardening", PhaseStatus.DONE, "verified")
+        state.save(paths.state_file)
+        return ["DONE root_hardening"]
+    state.set_phase("root_hardening", PhaseStatus.FAILED, "verification failed")
+    state.save(paths.state_file)
+    raise SetupError(
+        "root_hardening",
+        "Verification failed for root_hardening",
+        retry_command="sudo vps-bootstrap root-hardening",
+    )
+
+
+def run_firewall_reconfigure(paths: Paths, logger=None) -> list[str]:
+    return run_component_reconfigure(paths, "firewall", ensure_firewall_from_state, verify_firewall_state, FirewallError, logger)
+
+
+def run_fail2ban_reconfigure(paths: Paths, logger=None) -> list[str]:
+    return run_component_reconfigure(paths, "fail2ban", ensure_fail2ban_from_state, verify_fail2ban_state, Fail2banError, logger)
+
+
+def run_security_updates_reconfigure(paths: Paths, logger=None) -> list[str]:
+    return run_component_reconfigure(paths, "security_updates", ensure_security_updates_from_state, verify_security_updates_state, SecurityUpdatesError, logger)
 
 
 def run_ssh_reconfigure(paths: Paths, logger=None) -> list[str]:
@@ -137,6 +317,7 @@ def run_ssh_reconfigure(paths: Paths, logger=None) -> list[str]:
 
     def save_migration(data: dict) -> None:
         state.update_phase_data("ssh_hardening", data)
+        synchronize_ssh_component_states(state, data)
         state.save(paths.state_file)
 
     try:
@@ -144,6 +325,7 @@ def run_ssh_reconfigure(paths: Paths, logger=None) -> list[str]:
             state.phases["ssh_hardening"].data,
             save_state=save_migration,
             force_reconfigure=True,
+            sudo_mode=selected_admin_sudo_mode(state),
         )
     except SSHHardeningError as exc:
         state.set_phase("ssh_hardening", PhaseStatus.FAILED, str(exc))
@@ -153,6 +335,7 @@ def run_ssh_reconfigure(paths: Paths, logger=None) -> list[str]:
         raise SetupError("ssh_hardening", str(exc), exc.diagnostics, retry_command="sudo vps-bootstrap ssh") from exc
 
     state.update_phase_data("ssh_hardening", data)
+    synchronize_ssh_component_states(state, data)
     if data.get("mode") == "skipped":
         state.set_phase("ssh_hardening", PhaseStatus.SKIPPED, data.get("reason", "SSH hardening skipped"))
         state.save(paths.state_file)
@@ -187,10 +370,11 @@ def run_setup(paths: Paths, project_root: Path, state: InstallState | None = Non
         verifier, executor = handlers[phase]
         status = state.phases[phase].status
         drift_detected = False
-        if status == PhaseStatus.SKIPPED:
+        interrupted_ssh = phase == "ssh_hardening" and state.phases[phase].data.get("interrupted_migration")
+        if status == PhaseStatus.SKIPPED and not interrupted_ssh:
             output.append(f"SKIP {phase} [marked skipped]")
             continue
-        if status == PhaseStatus.DONE:
+        if status == PhaseStatus.DONE and not interrupted_ssh:
             started = monotonic()
             if verifier():
                 if logger:
@@ -237,7 +421,7 @@ def run_setup(paths: Paths, project_root: Path, state: InstallState | None = Non
                 logger.info(str(exc), extra={"stage": phase, "result": "skipped", "duration": monotonic() - started})
             output.append(f"SKIP {phase} [{exc}]")
             continue
-        except (SwapError, SSHHardeningError) as exc:
+        except (SwapError, AdminUserError, RootHardeningError, FirewallError, Fail2banError, SSHHardeningError, SecurityUpdatesError) as exc:
             state.set_phase(phase, PhaseStatus.FAILED, str(exc))
             state.save(paths.state_file)
             if logger:
